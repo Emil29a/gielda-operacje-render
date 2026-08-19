@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { CurrentPortfolioPosition, DashboardPayload, Investor, TradeEvent } from "../lib/types";
+import type { CurrentPortfolioPosition, DashboardPayload, GainPoint, Investor, InvestorExtendedStats, TradeEvent } from "../lib/types";
 import {
   formatWarsawMoment,
   isWeekendDateKey,
@@ -539,6 +539,76 @@ function InvestorCard({
   );
 }
 
+function formatMonthLabel(date: string) {
+  const [year, month] = date.split("-");
+  const names = ["sty", "lut", "mar", "kwi", "maj", "cze", "lip", "sie", "wrz", "paź", "lis", "gru"];
+  return `${names[Number(month) - 1]} ${year.slice(2)}`;
+}
+
+function GainChips({ points, yearOnly = false }: { points: GainPoint[]; yearOnly?: boolean }) {
+  if (!points.length) return <span className="gain-chips-empty">brak danych</span>;
+  return (
+    <div className="gain-chips">
+      {points.map((point) => (
+        <span key={point.date} className={`gain-chip ${point.gain >= 0 ? "positive" : "negative"}`}>
+          <small>{yearOnly ? point.date.slice(0, 4) : formatMonthLabel(point.date)}</small>
+          {formatPercent(point.gain, true)}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function ExtendedStatsSection({
+  loading,
+  error,
+  stats,
+}: {
+  loading: boolean;
+  error: string;
+  stats: InvestorExtendedStats | null;
+}) {
+  return (
+    <section className="extended-stats" aria-label="Statystyki rozszerzone">
+      <div className="extended-stats-heading">
+        <span className="section-kicker">Statystyki rozszerzone</span>
+        {loading && (
+          <span className="extended-stats-loading" role="status" aria-live="polite">
+            <span className="loading-spinner small" aria-hidden="true" />
+            Ładowanie…
+          </span>
+        )}
+      </div>
+      {!loading && error && (
+        <div className="alert error compact" role="alert">Nie udało się pobrać statystyk rozszerzonych: {error}</div>
+      )}
+      {!loading && !error && stats && (
+        <>
+          <div className="extended-stats-grid">
+            <span><small>Transakcje na plusie</small><strong>{formatPercent(stats.winRatio)}</strong></span>
+            <span><small>Zwrot annualizowany</small><strong className={gainTone(stats.annualizedReturn)}>{formatPercent(stats.annualizedReturn, true)}</strong></span>
+            <span><small>Aktywne tygodnie</small><strong>{formatPercent(stats.activeWeeksPct)}</strong></span>
+            <span><small>Pozycje długie</small><strong>{formatPercent(stats.longPosPct)}</strong></span>
+            <span><small>Śr. wielkość pozycji</small><strong>{formatPercent(stats.avgPosSize)}</strong></span>
+            <span>
+              <small>Najczęściej handlowany</small>
+              <strong>
+                {stats.topTradedInstrumentSymbol ?? (stats.topTradedInstrumentId != null ? `#${stats.topTradedInstrumentId}` : "—")}
+                {stats.topTradedAssetClass && ` · ${stats.topTradedAssetClass}`}
+                {stats.topTradedInstrumentPct != null && ` (${formatPercent(stats.topTradedInstrumentPct)})`}
+              </strong>
+            </span>
+          </div>
+          <div className="extended-stats-gains">
+            <span><small>Wynik roczny</small><GainChips points={stats.yearlyGains} yearOnly /></span>
+            <span><small>Wynik miesięczny (ost. 12 mies.)</small><GainChips points={stats.monthlyGains} /></span>
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
 function PortfolioDialog({
   investor,
   positions,
@@ -574,6 +644,21 @@ function PortfolioDialog({
       document.body.classList.remove("modal-open");
     };
   }, [onClose]);
+
+  // Extended stats (win ratio, top traded instrument, monthly/yearly gain
+  // history) cost 3 extra eToro requests, so they're only fetched once this
+  // dialog is actually open for this investor — never preloaded for all 27.
+  const [extendedStats, setExtendedStats] = useState<InvestorExtendedStats | null>(null);
+  const [extendedStatsError, setExtendedStatsError] = useState("");
+  const [extendedStatsLoading, setExtendedStatsLoading] = useState(true);
+  useEffect(() => {
+    let cancelled = false;
+    api<InvestorExtendedStats>(`/api/investor-stats?username=${encodeURIComponent(investor.username)}`)
+      .then((data) => { if (!cancelled) setExtendedStats(data); })
+      .catch((error) => { if (!cancelled) setExtendedStatsError(error instanceof Error ? error.message : "Nie udało się pobrać statystyk."); })
+      .finally(() => { if (!cancelled) setExtendedStatsLoading(false); });
+    return () => { cancelled = true; };
+  }, [investor.username]);
 
   return (
     // The backdrop is intentionally mouse-only; the dialog has a native close button and Escape support.
@@ -612,6 +697,7 @@ function PortfolioDialog({
           <span><small>Otwarte pozycje</small><strong>{positions.length}</strong></span>
           <span><small>Instrumenty w portfelu</small><strong>{instrumentCount}</strong></span>
         </div>
+        <ExtendedStatsSection loading={extendedStatsLoading} error={extendedStatsError} stats={extendedStats} />
         <section className="portfolio-recent" aria-labelledby="recent-trades-title">
           <div className="portfolio-recent-heading">
             <span>
@@ -1334,6 +1420,7 @@ export function Dashboard() {
 
       {portfolioInvestor && (
         <PortfolioDialog
+          key={portfolioInvestor.username}
           investor={portfolioInvestor}
           positions={portfolioPositions}
           events={portfolioEvents}

@@ -106,3 +106,24 @@ export type DashboardPayload = {
   positions: CurrentPortfolioPosition[];
   notice: string;
 };
+
+export type GainPoint = {
+  date: string;
+  gain: number;
+};
+
+export type InvestorExtendedStats = {
+  winRatio: number | null;
+  trades: number | null;
+  totalTradedInstruments: number | null;
+  activeWeeksPct: number | null;
+  longPosPct: number | null;
+  avgPosSize: number | null;
+  annualizedReturn: number | null;
+  topTradedInstrumentId: number | null;
+  topTradedInstrumentSymbol: string | null;
+  topTradedInstrumentPct: number | null;
+  topTradedAssetClass: string | null;
+  monthlyGains: GainPoint[];
+  yearlyGains: GainPoint[];
+};

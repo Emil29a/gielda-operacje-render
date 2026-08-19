@@ -1,4 +1,4 @@
-import type { HistoricalPosition, Instrument, Investor, MarketRate, PortfolioPosition } from "./types";
+import type { GainPoint, HistoricalPosition, Instrument, InvestorExtendedStats, Investor, MarketRate, PortfolioPosition } from "./types";
 import { shiftDateKey, warsawDateKey } from "./time";
 import { mapWithConcurrency } from "./concurrency";
 import { findKnownExchangeNames, findKnownInstruments, getState, getStateWithTimestamp, setState } from "./store";
@@ -580,4 +580,87 @@ export async function fetchMarketRates(instrumentIds: number[]): Promise<MarketR
       rateAt: item.date ?? null,
     };
   }).filter((item) => Number.isFinite(item.instrumentId));
+}
+
+// eToro's /market-data/instrument-types list is short and effectively
+// static (10 asset classes) — not worth a live call just to label
+// topTradedAssetClassId, so it's hardcoded here instead.
+const ASSET_CLASS_NAMES: Record<number, string> = {
+  1: "Forex",
+  2: "Surowce",
+  3: "CFD",
+  4: "Indeksy",
+  5: "Akcje",
+  6: "ETF",
+  7: "Obligacje",
+  8: "Fundusze",
+  9: "Opcje",
+  10: "Kryptowaluty",
+};
+
+// Extended, on-demand stats for a single investor's profile dialog — not
+// part of the batch sync (lib/sync.ts), fetched only when a user actually
+// opens that investor's portfolio, so the extra eToro requests are paced by
+// real clicks rather than adding to the 27-investor background sync budget.
+//
+// profitableWeeksPct/profitableMonthsPct/peakToValley and
+// weeksSinceRegistration are deliberately NOT surfaced here: verified
+// directly against a known investor whose /gain history shows real negative
+// months, these fields still come back as flat 0 (or, for
+// weeksSinceRegistration, off from the investor's true registration date by
+// years) — eToro's API returns them but they don't reflect reality, so
+// showing them would just be confidently wrong.
+export async function fetchInvestorExtendedStats(username: string): Promise<InvestorExtendedStats> {
+  const [rankingResult, monthlyResult, yearlyResult] = await Promise.allSettled([
+    etoroRequest<{
+      data?: {
+        winRatio?: number;
+        trades?: number;
+        totalTradedInstruments?: number;
+        activeWeeksPct?: number;
+        longPosPct?: number;
+        avgPosSize?: number;
+        annualizedReturn?: number;
+        topTradedInstrumentId?: number;
+        topTradedInstrumentPct?: number;
+        topTradedAssetClassId?: number;
+      };
+    }>(`/api/v2/portfolios/${encodeURIComponent(username)}/rankings?period=LastYear`),
+    etoroRequest<{ gains?: Array<{ date: string; gain: number }> }>(
+      `/api/v2/portfolios/${encodeURIComponent(username)}/gain/monthly?count=12`,
+    ),
+    etoroRequest<{ gains?: Array<{ date: string; gain: number }> }>(
+      `/api/v2/portfolios/${encodeURIComponent(username)}/gain/yearly?count=6`,
+    ),
+  ]);
+
+  const ranking = rankingResult.status === "fulfilled" ? rankingResult.value.data ?? null : null;
+  const toGainPoints = (result: typeof monthlyResult): GainPoint[] =>
+    result.status === "fulfilled"
+      ? (result.value.gains ?? []).map((point) => ({ date: point.date, gain: point.gain * 100 }))
+      : [];
+
+  let topTradedInstrumentSymbol: string | null = null;
+  if (ranking?.topTradedInstrumentId != null) {
+    const [instrument] = await fetchInstruments([ranking.topTradedInstrumentId]).catch(() => []);
+    topTradedInstrumentSymbol = instrument?.symbol ?? null;
+  }
+
+  return {
+    winRatio: ranking?.winRatio ?? null,
+    trades: ranking?.trades ?? null,
+    totalTradedInstruments: ranking?.totalTradedInstruments ?? null,
+    activeWeeksPct: ranking?.activeWeeksPct ?? null,
+    longPosPct: ranking?.longPosPct ?? null,
+    avgPosSize: ranking?.avgPosSize ?? null,
+    annualizedReturn: ranking?.annualizedReturn != null ? ranking.annualizedReturn * 100 : null,
+    topTradedInstrumentId: ranking?.topTradedInstrumentId ?? null,
+    topTradedInstrumentSymbol,
+    topTradedInstrumentPct: ranking?.topTradedInstrumentPct ?? null,
+    topTradedAssetClass: ranking?.topTradedAssetClassId != null
+      ? ASSET_CLASS_NAMES[ranking.topTradedAssetClassId] ?? null
+      : null,
+    monthlyGains: toGainPoints(monthlyResult),
+    yearlyGains: toGainPoints(yearlyResult),
+  };
 }
