@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1787044170630,
+      "tag": "0000_friendly_wild_child",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1787044203236,
+      "tag": "0001_tidy_black_panther",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1787048200000,
+      "tag": "0002_add_investor_period_gains",
+      "breakpoints": true
+    }
+  ]
+}
