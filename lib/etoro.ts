@@ -1,4 +1,4 @@
-import type { AssetAllocationSeries, ExposurePoint, GainPoint, HistoricalPosition, Instrument, InvestorExtendedStats, Investor, MarketRate, PortfolioPosition } from "./types";
+import type { AssetAllocationSeries, ExposurePoint, FeedPost, GainPoint, HistoricalPosition, Instrument, InvestorExtendedStats, Investor, MarketRate, PortfolioPosition } from "./types";
 import { shiftDateKey, warsawDateKey } from "./time";
 import { mapWithConcurrency } from "./concurrency";
 import { findKnownExchangeNames, findKnownInstruments, getState, getStateWithTimestamp, setState } from "./store";
@@ -621,8 +621,34 @@ const ASSET_CLASS_NAMES: Record<number, string> = {
 // weeksSinceRegistration, off from the investor's true registration date by
 // years) — eToro's API returns them but they don't reflect reality, so
 // showing them would just be confidently wrong.
-export async function fetchInvestorExtendedStats(username: string): Promise<InvestorExtendedStats> {
-  const [rankingResult, monthlyResult, yearlyResult, exposureResult, assetsResult] = await Promise.allSettled([
+type RawFeedResponse = {
+  discussions?: Array<{
+    id: string;
+    post?: {
+      owner?: { username?: string; avatar?: { medium?: string; small?: string } };
+      created?: string;
+      message?: { text?: string };
+    };
+  }>;
+};
+
+function toFeedPosts(result: PromiseSettledResult<RawFeedResponse>): FeedPost[] {
+  if (result.status !== "fulfilled") return [];
+  return (result.value.discussions ?? []).flatMap((item) => {
+    const post = item.post;
+    if (!post?.owner?.username || !post.created || !post.message?.text) return [];
+    return [{
+      id: item.id,
+      username: post.owner.username,
+      avatarUrl: post.owner.avatar?.medium ?? post.owner.avatar?.small ?? null,
+      createdAt: post.created,
+      text: post.message.text,
+    }];
+  });
+}
+
+export async function fetchInvestorExtendedStats(username: string, cid: number): Promise<InvestorExtendedStats> {
+  const [rankingResult, monthlyResult, yearlyResult, exposureResult, assetsResult, userPostsResult, newsPostsResult] = await Promise.allSettled([
     etoroRequest<{
       data?: {
         gain?: number;
@@ -639,7 +665,7 @@ export async function fetchInvestorExtendedStats(username: string): Promise<Inve
       };
     }>(`/api/v2/portfolios/${encodeURIComponent(username)}/rankings?period=LastYear`),
     etoroRequest<{ gains?: Array<{ date: string; gain: number }> }>(
-      `/api/v2/portfolios/${encodeURIComponent(username)}/gain/monthly?count=24`,
+      `/api/v2/portfolios/${encodeURIComponent(username)}/gain/monthly`,
     ),
     etoroRequest<{ gains?: Array<{ date: string; gain: number }> }>(
       `/api/v2/portfolios/${encodeURIComponent(username)}/gain/yearly?count=6`,
@@ -654,6 +680,8 @@ export async function fetchInvestorExtendedStats(username: string): Promise<Inve
         assets?: Array<{ instrumentId: number; symbol: string; investedPct: number }>;
       }>;
     }>(`/api/v2/portfolios/${encodeURIComponent(username)}/assets/history?period=OneMonthAgo`),
+    etoroRequest<RawFeedResponse>(`/api/v1/feeds/user/${cid}?take=5`),
+    etoroRequest<RawFeedResponse>(`/api/v1/feeds/news?take=5`),
   ]);
 
   const ranking = rankingResult.status === "fulfilled" ? rankingResult.value.data ?? null : null;
@@ -666,9 +694,16 @@ export async function fetchInvestorExtendedStats(username: string): Promise<Inve
       : [];
 
   let topTradedInstrumentSymbol: string | null = null;
+  let instrumentPosts: FeedPost[] = [];
   if (ranking?.topTradedInstrumentId != null) {
-    const [instrument] = await fetchInstruments([ranking.topTradedInstrumentId]).catch(() => []);
-    topTradedInstrumentSymbol = instrument?.symbol ?? null;
+    const [instrument, instrumentFeedResult] = await Promise.all([
+      fetchInstruments([ranking.topTradedInstrumentId]).catch(() => []),
+      etoroRequest<RawFeedResponse>(`/api/v1/feeds/instrument/${ranking.topTradedInstrumentId}?take=5`)
+        .then((value): PromiseSettledResult<RawFeedResponse> => ({ status: "fulfilled", value }))
+        .catch((reason): PromiseSettledResult<RawFeedResponse> => ({ status: "rejected", reason })),
+    ]);
+    topTradedInstrumentSymbol = instrument[0]?.symbol ?? null;
+    instrumentPosts = toFeedPosts(instrumentFeedResult);
   }
 
   // Position within the Popular Investor cohort: the list endpoint never
@@ -768,5 +803,8 @@ export async function fetchInvestorExtendedStats(username: string): Promise<Inve
     assetAllocationHistory,
     rankPosition,
     rankPoolSize,
+    userPosts: toFeedPosts(userPostsResult),
+    instrumentPosts,
+    newsPosts: toFeedPosts(newsPostsResult),
   };
 }

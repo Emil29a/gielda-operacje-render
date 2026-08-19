@@ -123,6 +123,14 @@ export type AssetAllocationSeries = {
   points: Array<{ date: string; values: number[] }>;
 };
 
+export type FeedPost = {
+  id: string;
+  username: string;
+  avatarUrl: string | null;
+  createdAt: string;
+  text: string;
+};
+
 export type InvestorExtendedStats = {
   winRatio: number | null;
   trades: number | null;
@@ -141,4 +149,7 @@ export type InvestorExtendedStats = {
   assetAllocationHistory: AssetAllocationSeries;
   rankPosition: number | null;
   rankPoolSize: number | null;
+  userPosts: FeedPost[];
+  instrumentPosts: FeedPost[];
+  newsPosts: FeedPost[];
 };

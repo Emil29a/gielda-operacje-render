@@ -347,17 +347,32 @@ button:disabled { opacity: .55; cursor: wait; }
 .extended-stats-charts-grid small { display: block; margin-bottom: 6px; color: var(--muted); font-size: 11px; font-weight: 600; }
 .chart-empty { color: var(--muted); font-size: 11px; }
 .chart-block { display: grid; gap: 6px; }
-.exposure-chart, .assets-chart { width: 100%; height: 130px; display: block; }
+.chart-explainer { margin: 0 0 4px; color: var(--muted); font-size: 10px; line-height: 1.4; }
+.exposure-chart { width: 100%; height: 130px; display: block; }
 .exposure-area { fill: rgba(11,122,90,.14); stroke: none; }
 .exposure-line { fill: none; stroke: var(--green); stroke-width: 2; vector-effect: non-scaling-stroke; }
 .chart-gridline { stroke: var(--line); stroke-width: 1; vector-effect: non-scaling-stroke; stroke-dasharray: 3 3; }
 .chart-axis-label { fill: var(--muted); font-size: 10px; }
 .chart-footnote { display: flex; align-items: center; justify-content: space-between; color: var(--muted); font-size: 10px; }
 .chart-footnote strong { color: var(--ink); font-size: 11px; }
-.chart-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.donut-row { display: flex; align-items: center; gap: 16px; }
+.assets-donut { width: 120px; height: 120px; flex: 0 0 auto; }
+.chart-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; flex: 1 1 auto; min-width: 0; }
 .chart-legend > span { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 10px; }
 .chart-legend b { color: var(--ink); font-weight: 700; }
 .chart-legend i { width: 9px; height: 9px; border-radius: 2px; flex: 0 0 auto; }
+.extended-stats-feeds { flex: 0 0 auto; padding: 14px; border-top: 1px solid var(--line); }
+.extended-stats-feeds-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 10px; }
+.extended-stats-feeds-grid > div { min-width: 0; }
+.extended-stats-feeds-grid small { display: block; margin-bottom: 6px; color: var(--muted); font-size: 11px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.feed-empty { color: var(--muted); font-size: 10px; }
+.feed-list { display: grid; gap: 10px; max-height: 260px; overflow-y: auto; padding-right: 2px; }
+.feed-post { display: flex; gap: 8px; }
+.feed-post .feed-avatar { width: 26px; height: 26px; flex: 0 0 auto; font-size: 9px; }
+.feed-post-heading { display: flex; align-items: baseline; gap: 6px; margin-bottom: 2px; }
+.feed-post-heading strong { font-size: 10px; }
+.feed-post-heading time { color: var(--muted); font-size: 8px; font-family: var(--font-geist-mono), monospace; }
+.feed-post p { margin: 0; color: var(--ink); font-size: 10px; line-height: 1.4; }
 .portfolio-recent { flex: 0 0 auto; padding: 10px 14px 12px; border-bottom: 1px solid var(--line); background: rgba(16,37,63,.035); }
 .portfolio-recent-heading { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin-bottom: 8px; }
 .portfolio-recent-heading > span { display: grid; gap: 2px; }
@@ -398,7 +413,7 @@ button:disabled { opacity: .55; cursor: wait; }
 .portfolio-filters button.active { border-color: var(--ink); background: var(--ink); color: #fff; }
 .portfolio-filters button.buy-filter.active { border-color: var(--buy); background: var(--buy); }
 .portfolio-filters button.short-filter.active { border-color: #6b3ca0; background: #6b3ca0; }
-.portfolio-position-list { flex: 1 1 auto; max-height: min(27vh, 300px); overflow-y: auto; padding: 0 14px 6px; }
+.portfolio-position-list { flex: 0 0 auto; max-height: min(27vh, 300px); overflow-y: auto; padding: 0 14px 6px; }
 .portfolio-position { display: grid; grid-template-columns: minmax(185px, 1.05fr) minmax(250px, 1.3fr) minmax(105px, .48fr) minmax(170px, .75fr); align-items: center; gap: 7px; padding: 3px 0; border-bottom: 1px solid var(--line); }
 .portfolio-position:last-child { border: 0; }
 .position-name { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 1px 7px; }
@@ -543,6 +558,9 @@ footer p { max-width: 690px; }
   .extended-stats-gains > span { grid-template-columns: 1fr; gap: 2px; }
   .extended-stats-charts { padding: 12px 15px; }
   .extended-stats-charts-grid { grid-template-columns: 1fr; }
+  .donut-row { flex-direction: column; align-items: flex-start; }
+  .extended-stats-feeds { padding: 12px 15px; }
+  .extended-stats-feeds-grid { grid-template-columns: 1fr; }
   .portfolio-recent { padding: 10px 15px; }
   .portfolio-recent-list { max-height: 52vh; }
   .portfolio-recent-trade { grid-template-columns: 1fr 1fr; gap: 5px 8px; }

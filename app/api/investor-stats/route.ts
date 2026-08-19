@@ -23,7 +23,7 @@ export async function GET(request: Request) {
     if (!investor) {
       return Response.json({ error: "Nie znaleziono inwestora." }, { status: 404 });
     }
-    const stats = await fetchInvestorExtendedStats(investor.username);
+    const stats = await fetchInvestorExtendedStats(investor.username, investor.cid);
     return Response.json(stats);
   } catch (error) {
     return Response.json(
