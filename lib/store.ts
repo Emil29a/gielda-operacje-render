@@ -77,7 +77,6 @@ const schemaStatements = [
     ON trade_events(username, occurred_at)`,
   `CREATE INDEX IF NOT EXISTS idx_current_positions_username
     ON current_positions(username)`,
-  `PRAGMA optimize`,
 ];
 
 export async function ensureSchema() {
