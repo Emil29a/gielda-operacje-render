@@ -46,6 +46,20 @@ export function shiftBusinessDateKey(value: string, days: number) {
   return result;
 }
 
+// Date-only variant of formatWarsawMoment, for notes where the exact time
+// of an earlier event (e.g. when a now-closed position was originally
+// opened) is more detail than needed — just the day is enough context.
+export function formatWarsawDate(value: string | null) {
+  if (!value) return null;
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("pl-PL", {
+    timeZone: WARSAW_TIMEZONE,
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  }).formatToParts(new Date(value)).map((part) => [part.type, part.value]));
+  return `${parts.day}.${parts.month}.${parts.year}`;
+}
+
 export function formatWarsawMoment(value: string | null) {
   if (!value) return null;
   const parts = Object.fromEntries(new Intl.DateTimeFormat("pl-PL", {

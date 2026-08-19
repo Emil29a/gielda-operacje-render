@@ -1,5 +1,7 @@
 import { getD1 } from "../db";
 import type { LibsqlD1Adapter, LibsqlPreparedStatement } from "../db/libsql-d1-adapter";
+import { formatWarsawDate } from "./time";
+import { formatPrice } from "./format";
 import type { Instrument, Investor, PortfolioPosition, TradeEvent } from "./types";
 
 type PositionRow = PortfolioPosition & {
@@ -416,7 +418,7 @@ export async function syncPositionsForInvestors(
           exchangeId: position.exchangeId,
           exchangeName: position.exchangeName,
         }, observedAt, observedAt,
-        "detected", "Pozycja zniknęła z publicznego portfela; podany czas jest czasem wykrycia.",
+        "detected", `Otwarta ${formatWarsawDate(position.openTimestamp)} po kursie ${formatPrice(position.openRate)}. Pozycja zniknęła z publicznego portfela; podany czas jest czasem wykrycia.`,
       ));
     }
 

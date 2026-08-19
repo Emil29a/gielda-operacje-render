@@ -2,7 +2,8 @@ import { etoroMode, fetchExchanges, fetchInstruments, fetchMarketRates, fetchPub
 import { ensureSchema, getState, listCurrentPositions, listEvents } from "../../../lib/store";
 import type { StoredPosition } from "../../../lib/store";
 import { ensureBootstrapped, synchronizePositionsOnly } from "../../../lib/sync";
-import { isValidDateKey, warsawDateKey, WARSAW_TIMEZONE } from "../../../lib/time";
+import { formatWarsawDate, isValidDateKey, warsawDateKey, WARSAW_TIMEZONE } from "../../../lib/time";
+import { formatPrice } from "../../../lib/format";
 import type { DashboardPayload, Instrument, TradeEvent } from "../../../lib/types";
 import { mapWithConcurrency, withDeadline } from "../../../lib/concurrency";
 
@@ -41,20 +42,26 @@ export async function GET(request: Request) {
       (event) => warsawDateKey(event.occurredAt) === selectedDate,
     );
     const unavailableHistory: string[] = [];
-    // Today always loads completely: try the cache first (fast — warmed by
-    // the synchronizePositionsOnly() call above), and for any investor it
-    // hasn't reached yet, fall back to a live fetch right here rather than
-    // just showing them as unavailable. The fallback stays gently paced
-    // (HISTORY_FETCH_CONCURRENCY), not a 27-way burst, to respect eToro's
-    // rate limit — the lesson from the burst-triggered 429s earlier.
-    // Any other date is lower priority (the user only sees it by explicitly
-    // clicking through) and stays cache-only, with no live fallback.
+    // Every date loads completely, not just today: try the cache first
+    // (fast — for today, warmed by the synchronizePositionsOnly() call
+    // above; for a past date, populated the first time anyone ever viewed
+    // it), and for any investor it hasn't reached yet, fall back to a live
+    // fetch right here rather than just showing them as unavailable. Once
+    // fetched, a past date's history is permanent — eToro's answer for a day
+    // that's already over never changes, and getCachedPublicHistory doesn't
+    // apply any TTL, so this fallback only ever runs once per investor per
+    // past date, no matter how many times it's revisited. The fallback
+    // itself stays gently paced (HISTORY_FETCH_CONCURRENCY), not a 27-way
+    // burst, to respect eToro's rate limit — the lesson from the
+    // burst-triggered 429s earlier. Today's cache does expire (still
+    // evolving through the day), so its fallback can run again on a later
+    // visit; that's fine, it's the same gentle pacing either way.
     const HISTORY_FETCH_CONCURRENCY = 3;
     const historyByInvestor = mode === "live"
       ? await mapWithConcurrency(investors, HISTORY_FETCH_CONCURRENCY, async (investor) => {
           const { positions, cached } = await getCachedPublicHistory(investor.cid, selectedDate);
           if (cached) return { investor, positions };
-          if (isToday && investor.cid !== 0) {
+          if (investor.cid !== 0) {
             const livePositions = await fetchPublicHistory(investor.cid, selectedDate).catch(() => null);
             if (livePositions) return { investor, positions: livePositions };
           }
@@ -145,7 +152,7 @@ export async function GET(request: Request) {
             netProfit: position.netProfit,
             closeRate: position.closeRate,
             precision: "exact",
-            note: "Dokładne zamknięcie, kurs i wynik pochodzą z publicznej historii eToro.",
+            note: `Otwarta ${formatWarsawDate(position.openTimestamp)} po kursie ${formatPrice(position.openRate)}. Dokładne zamknięcie, kurs i wynik pochodzą z publicznej historii eToro.`,
             rateKind: "closing",
           });
         }

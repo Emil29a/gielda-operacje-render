@@ -11,6 +11,57 @@ import {
   warsawDateKey,
 } from "../lib/time";
 
+type ConsolidatedPosition = CurrentPortfolioPosition & { mergedCount: number; firstOpenTimestamp: string };
+
+// Same instrument, same direction (long vs short kept separate — merging
+// them would hide a hedge as if it netted out) gets combined into one row:
+// average entry price and average return weighted by each position's
+// portfolio share (investmentPct) — the standard "average cost / weighted
+// return" a broker's own portfolio view shows, rather than every single
+// trade listed as its own line.
+function consolidatePositions(positions: CurrentPortfolioPosition[]): ConsolidatedPosition[] {
+  const groups = new Map<string, CurrentPortfolioPosition[]>();
+  for (const position of positions) {
+    const key = `${position.instrumentId}:${position.isBuy}`;
+    const list = groups.get(key);
+    if (list) list.push(position);
+    else groups.set(key, [position]);
+  }
+  const consolidated = [...groups.values()].map((group) => {
+    if (group.length === 1) return { ...group[0], mergedCount: 1, firstOpenTimestamp: group[0].openTimestamp };
+    const weightOf = (position: CurrentPortfolioPosition) => position.investmentPct ?? 1;
+    const weightedAverage = (getValue: (position: CurrentPortfolioPosition) => number | null) => {
+      let weightedSum = 0;
+      let weightTotal = 0;
+      for (const position of group) {
+        const value = getValue(position);
+        if (value == null) continue;
+        const weight = weightOf(position);
+        weightedSum += value * weight;
+        weightTotal += weight;
+      }
+      return weightTotal > 0 ? weightedSum / weightTotal : null;
+    };
+    const totalInvestmentPct = group.reduce((sum, position) => sum + (position.investmentPct ?? 0), 0);
+    const newestOpen = group.reduce((latest, position) =>
+      new Date(position.openTimestamp) > new Date(latest.openTimestamp) ? position : latest);
+    const oldestOpen = group.reduce((earliest, position) =>
+      new Date(position.openTimestamp) < new Date(earliest.openTimestamp) ? position : earliest);
+    return {
+      ...group[0],
+      positionId: group.map((position) => position.positionId).join(","),
+      openTimestamp: newestOpen.openTimestamp,
+      firstOpenTimestamp: oldestOpen.openTimestamp,
+      openRate: weightedAverage((position) => position.openRate),
+      netProfit: weightedAverage((position) => position.netProfit),
+      investmentPct: totalInvestmentPct || null,
+      mergedCount: group.length,
+    };
+  });
+  consolidated.sort((a, b) => new Date(b.openTimestamp).getTime() - new Date(a.openTimestamp).getTime());
+  return consolidated;
+}
+
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, { cache: "no-store", ...init });
   const body = (await response.json().catch(() => ({}))) as T & { error?: string };
@@ -38,6 +89,11 @@ function formatPercent(value: number | null | undefined, signed = false) {
 function formatRate(value: number | null | undefined) {
   if (value == null) return "—";
   return new Intl.NumberFormat("pl-PL", { maximumSignificantDigits: 8 }).format(value);
+}
+
+function formatRate2(value: number | null | undefined) {
+  if (value == null) return "—";
+  return new Intl.NumberFormat("pl-PL", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
 }
 
 function formatTime(value: string | null, withSeconds = false) {
@@ -400,18 +456,18 @@ function eventLabel(event: TradeEvent) {
 }
 
 function eventContext(event: TradeEvent) {
+  // For CLOSE and UPDATE events, event.note carries real detail (when the
+  // now-closed position was originally opened; exactly what changed for an
+  // update) written by lib/store.ts and app/api/dashboard/route.ts — showing
+  // that instead of a fixed generic label is the whole point of these
+  // journal entries. OPEN events don't need it: the entry's own timestamp
+  // already is the open date.
   if (!event.isBuy) {
     if (event.eventType === "OPEN") return "Otwarcie pozycji short";
-    if (event.eventType === "CLOSE") return "Zamknięcie pozycji short";
-    return event.note || "Aktualizacja pozycji short";
+    return event.note || (event.eventType === "CLOSE" ? "Zamknięcie pozycji short" : "Aktualizacja pozycji short");
   }
   if (event.eventType === "OPEN") return "Otwarcie pozycji";
-  if (event.eventType === "CLOSE") return "Zamknięcie pozycji";
-  // For UPDATE events, event.note holds exactly what changed (e.g.
-  // "Zmieniono dźwignia: 2x → 3x."), written by store.ts's describeChange —
-  // showing that instead of a generic "Aktualizacja pozycji" is the whole
-  // point of a journal entry titled "Zmienił pozycję".
-  return event.note || "Aktualizacja pozycji";
+  return event.note || (event.eventType === "CLOSE" ? "Zamknięcie pozycji" : "Aktualizacja pozycji");
 }
 
 function summaryAction(event: TradeEvent) {
@@ -499,7 +555,8 @@ function PortfolioDialog({
   onClose: () => void;
 }) {
   const [sideFilter, setSideFilter] = useState<"all" | "buy" | "short">("all");
-  const visiblePositions = positions.filter((position) =>
+  const consolidatedPositions = useMemo(() => consolidatePositions(positions), [positions]);
+  const visiblePositions = consolidatedPositions.filter((position) =>
     sideFilter === "all" || (sideFilter === "buy" ? position.isBuy : !position.isBuy),
   );
   const buyCount = positions.filter((position) => position.isBuy).length;
@@ -602,7 +659,10 @@ function PortfolioDialog({
           „Zmiana ceny” porównuje kurs otwarcia pozycji z najnowszym kursem instrumentu. Nie uwzględnia spreadu, opłat ani kierunku pozycji, więc nie jest wynikiem rachunku inwestora.
         </p>
         <div className="portfolio-filters" role="group" aria-label="Filtr operacji w portfelu">
-          <span>Publiczne API eToro: <strong>{positions.length}</strong> unikalnych otwartych pozycji w <strong>{instrumentCount}</strong> instrumentach</span>
+          <span>
+            Aktualny portfel inwestora: <strong>{instrumentCount}</strong> instrumentów
+            {positions.length !== consolidatedPositions.length && <> ({positions.length} pozycji łącznie)</>}
+          </span>
           <div>
             <button type="button" className={sideFilter === "all" ? "active" : ""} onClick={() => setSideFilter("all")}>Wszystkie ({positions.length})</button>
             <button type="button" className={`buy-filter ${sideFilter === "buy" ? "active" : ""}`} onClick={() => setSideFilter("buy")}>Kupił ({buyCount})</button>
@@ -617,13 +677,18 @@ function PortfolioDialog({
                 <span className="position-identity">
                   {!position.isBuy && <span className="position-side short">Short</span>}
                   <strong>{position.symbol}</strong>
+                  {position.mergedCount > 1 && <em>{position.mergedCount}×</em>}
                   <span className="position-display-name">{position.displayName}</span>
                 </span>
                 <span className="position-exchange">{position.exchangeName ?? "Rynek nieopisany przez eToro"} · instrument eToro #{position.instrumentId}</span>
               </div>
               <div className="position-facts">
-                <span><small>Otwarcie</small><strong>{formatMoment(position.openTimestamp)}</strong></span>
-                <span><small>Kurs otwarcia</small><strong>{formatRate(position.openRate)}</strong></span>
+                {position.mergedCount > 1 ? (
+                  <span><small>Pierwsze / ostatnie otwarcie</small><strong>{formatMoment(position.firstOpenTimestamp)} → {formatMoment(position.openTimestamp)}</strong></span>
+                ) : (
+                  <span><small>Otwarcie</small><strong>{formatMoment(position.openTimestamp)}</strong></span>
+                )}
+                <span><small>{position.mergedCount > 1 ? "Śr. kurs otwarcia" : "Kurs otwarcia"}</small><strong>{position.mergedCount > 1 ? formatRate2(position.openRate) : formatRate(position.openRate)}</strong></span>
                 {position.investmentPct != null && <span><small>Udział portfela</small><strong>{formatPercent(position.investmentPct)}</strong></span>}
               </div>
               <PositionReturn value={position.netProfit} />
@@ -1117,7 +1182,10 @@ export function Dashboard() {
           <section className={`day-summary ${busy ? "is-loading" : ""}`} aria-labelledby="day-summary-title" aria-busy={busy}>
             <div className="day-summary-heading">
               <span className="section-kicker">W skrócie</span>
-              <strong id="day-summary-title">Co wydarzyło się {formatQuickDate(selectedDate)}</strong>
+              <strong id="day-summary-title">
+                Co wydarzyło się {formatQuickDate(selectedDate)}
+                {" "}<span className="day-summary-count">({groupedVisibleEvents.length} {groupedVisibleEvents.length === 1 ? "operacja" : "operacji"})</span>
+              </strong>
               {busy && (
                 <span className="day-summary-updating" role="status" aria-live="polite">
                   <span className="loading-spinner small" aria-hidden="true" />
