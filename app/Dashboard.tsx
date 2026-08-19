@@ -574,9 +574,9 @@ const ALLOCATION_CHART_COLORS = ["#637082", "#0b7a5a", "#28659f", "#c95f42", "#b
 
 function ExposureChart({ points }: { points: ExposurePoint[] }) {
   if (points.length < 2) return <span className="chart-empty">brak danych</span>;
-  const width = 560;
-  const height = 90;
-  const padding = 4;
+  const width = 720;
+  const height = 160;
+  const padding = 8;
   const values = points.map((point) => point.absExposurePct);
   const max = Math.max(...values, 1);
   const min = Math.min(0, ...values);
@@ -589,8 +589,12 @@ function ExposureChart({ points }: { points: ExposurePoint[] }) {
   return (
     <div className="chart-block">
       <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" className="exposure-chart" role="img" aria-label="Ekspozycja portfela w czasie">
+        <line x1={padding} y1={toY(max)} x2={width - padding} y2={toY(max)} className="chart-gridline" />
+        <line x1={padding} y1={toY(min)} x2={width - padding} y2={toY(min)} className="chart-gridline" />
         <polygon points={areaPoints} className="exposure-area" />
         <polyline points={linePoints} className="exposure-line" />
+        <text x={padding} y={toY(max) - 4} className="chart-axis-label">{formatPercent(max)}</text>
+        <text x={padding} y={toY(min) + 11} className="chart-axis-label">{formatPercent(min)}</text>
       </svg>
       <div className="chart-footnote">
         <span>{formatQuickDate(points[0].date)}</span>
@@ -603,9 +607,9 @@ function ExposureChart({ points }: { points: ExposurePoint[] }) {
 
 function AssetAllocationChart({ series }: { series: AssetAllocationSeries }) {
   if (series.points.length < 2) return <span className="chart-empty">brak danych</span>;
-  const width = 560;
-  const height = 110;
-  const padding = 4;
+  const width = 720;
+  const height = 190;
+  const padding = 8;
   const stepX = (width - padding * 2) / (series.points.length - 1);
   const stacks = series.points.map((point) => {
     let acc = 0;
@@ -617,6 +621,8 @@ function AssetAllocationChart({ series }: { series: AssetAllocationSeries }) {
   });
   const maxTotal = Math.max(...stacks.map((stack) => stack[stack.length - 1]?.[1] ?? 0), 1);
   const toY = (value: number) => height - padding - (value / maxTotal) * (height - padding * 2);
+  const lastDay = series.points[series.points.length - 1];
+  const lastStack = stacks[stacks.length - 1];
   return (
     <div className="chart-block">
       <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" className="assets-chart" role="img" aria-label="Skład portfela w czasie">
@@ -633,12 +639,18 @@ function AssetAllocationChart({ series }: { series: AssetAllocationSeries }) {
         })}
       </svg>
       <div className="chart-legend">
-        {series.labels.map((label, index) => (
-          <span key={label}>
-            <i style={{ background: ALLOCATION_CHART_COLORS[index % ALLOCATION_CHART_COLORS.length] }} />
-            {label}
-          </span>
-        ))}
+        {series.labels.map((label, index) => {
+          const share = lastDay.values[index] ?? 0;
+          const displayShare = index === series.labels.length - 1
+            ? Math.max(0, 100 - lastStack.slice(0, -1).reduce((sum, [, end]) => Math.max(sum, end), 0))
+            : share;
+          return (
+            <span key={label}>
+              <i style={{ background: ALLOCATION_CHART_COLORS[index % ALLOCATION_CHART_COLORS.length] }} />
+              {label} <b>{formatPercent(displayShare)}</b>
+            </span>
+          );
+        })}
       </div>
     </div>
   );
@@ -672,6 +684,14 @@ function ExtendedStatsSection({
           <div className="extended-stats-grid">
             <span><small>Transakcje na plusie</small><strong>{formatPercent(stats.winRatio)}</strong></span>
             <span><small>Zwrot annualizowany</small><strong className={gainTone(stats.annualizedReturn)}>{formatPercent(stats.annualizedReturn, true)}</strong></span>
+            <span>
+              <small>Ranking wśród PI (rok)</small>
+              <strong>
+                {stats.rankPosition != null && stats.rankPoolSize != null
+                  ? `${stats.rankPosition}. z ${stats.rankPoolSize} (top ${Math.max(1, Math.ceil((stats.rankPosition / stats.rankPoolSize) * 100))}%)`
+                  : "—"}
+              </strong>
+            </span>
             <span><small>Aktywne tygodnie</small><strong>{formatPercent(stats.activeWeeksPct)}</strong></span>
             <span><small>Pozycje długie</small><strong>{formatPercent(stats.longPosPct)}</strong></span>
             <span><small>Śr. wielkość pozycji</small><strong>{formatPercent(stats.avgPosSize)}</strong></span>
@@ -686,14 +706,23 @@ function ExtendedStatsSection({
           </div>
           <div className="extended-stats-gains">
             <span><small>Wynik roczny</small><GainChips points={stats.yearlyGains} yearOnly /></span>
-            <span><small>Wynik miesięczny (ost. 12 mies.)</small><GainChips points={stats.monthlyGains} /></span>
-          </div>
-          <div className="extended-stats-charts">
-            <span><small>Ekspozycja portfela (ost. 30 dni)</small><ExposureChart points={stats.exposureHistory} /></span>
-            <span><small>Skład portfela wg instrumentu (ost. 30 dni)</small><AssetAllocationChart series={stats.assetAllocationHistory} /></span>
+            <span><small>Wynik miesięczny (ost. 24 mies.)</small><GainChips points={stats.monthlyGains} /></span>
           </div>
         </>
       )}
+    </section>
+  );
+}
+
+function ExtendedStatsCharts({ stats }: { stats: InvestorExtendedStats | null }) {
+  if (!stats) return null;
+  return (
+    <section className="extended-stats-charts" aria-label="Ekspozycja i skład portfela w czasie">
+      <span className="section-kicker">Ekspozycja i skład portfela w czasie</span>
+      <div className="extended-stats-charts-grid">
+        <div><small>Ekspozycja portfela (ost. 30 dni)</small><ExposureChart points={stats.exposureHistory} /></div>
+        <div><small>Skład portfela wg instrumentu (ost. 30 dni)</small><AssetAllocationChart series={stats.assetAllocationHistory} /></div>
+      </div>
     </section>
   );
 }
@@ -781,6 +810,7 @@ function PortfolioDialog({
           </div>
           <button className="dialog-close" type="button" onClick={onClose} aria-label="Zamknij portfel">×</button>
         </header>
+        <div className="portfolio-dialog-body">
         <div className="portfolio-summary">
           <span><small>Od początku roku</small><strong className={gainTone(investor.gainYtd)}>{formatPercent(investor.gainYtd, true)}</strong></span>
           <span><small>Ostatnie 2 lata</small><strong className={gainTone(investor.gainTwoYears)}>{formatPercent(investor.gainTwoYears, true)}</strong></span>
@@ -871,6 +901,8 @@ function PortfolioDialog({
               <PriceMovement value={position.priceChangePct} direction={position.priceDirection} currentRate={position.currentRate} currentRateAt={position.currentRateAt} quoteStatus={position.quoteStatus} compact />
             </article>
           )) : <div className="portfolio-empty">Brak pozycji pasujących do wybranego filtra.</div>}
+        </div>
+        <ExtendedStatsCharts stats={extendedStats} />
         </div>
       </section>
     </div>

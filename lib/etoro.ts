@@ -625,6 +625,7 @@ export async function fetchInvestorExtendedStats(username: string): Promise<Inve
   const [rankingResult, monthlyResult, yearlyResult, exposureResult, assetsResult] = await Promise.allSettled([
     etoroRequest<{
       data?: {
+        gain?: number;
         winRatio?: number;
         trades?: number;
         totalTradedInstruments?: number;
@@ -638,7 +639,7 @@ export async function fetchInvestorExtendedStats(username: string): Promise<Inve
       };
     }>(`/api/v2/portfolios/${encodeURIComponent(username)}/rankings?period=LastYear`),
     etoroRequest<{ gains?: Array<{ date: string; gain: number }> }>(
-      `/api/v2/portfolios/${encodeURIComponent(username)}/gain/monthly?count=12`,
+      `/api/v2/portfolios/${encodeURIComponent(username)}/gain/monthly?count=24`,
     ),
     etoroRequest<{ gains?: Array<{ date: string; gain: number }> }>(
       `/api/v2/portfolios/${encodeURIComponent(username)}/gain/yearly?count=6`,
@@ -668,6 +669,31 @@ export async function fetchInvestorExtendedStats(username: string): Promise<Inve
   if (ranking?.topTradedInstrumentId != null) {
     const [instrument] = await fetchInstruments([ranking.topTradedInstrumentId]).catch(() => []);
     topTradedInstrumentSymbol = instrument?.symbol ?? null;
+  }
+
+  // Position within the Popular Investor cohort: the list endpoint never
+  // returns a rank number directly, but it does return `pagination.totalItems`
+  // for a filtered query — so the pool size and "how many rank above this
+  // investor" are each obtained with a single pageSize=1 request (reading
+  // only the count, not the rows) instead of paging through the full list.
+  // Restricted to popularInvestor=true — the unfiltered pool is ~3.5 million
+  // accounts (mostly inactive/demo), which would make any percentile
+  // meaningless; Popular Investors (roughly 500-600) are the only cohort
+  // this comparison is actually useful against.
+  let rankPosition: number | null = null;
+  let rankPoolSize: number | null = null;
+  if (ranking?.gain != null) {
+    const rankingsPath = `/api/v2/portfolios/rankings?period=LastYear&sort=-gain&popularInvestor=true&pageSize=1`;
+    const [poolResult, aboveResult] = await Promise.allSettled([
+      etoroRequest<{ pagination?: { totalItems?: number } }>(rankingsPath),
+      etoroRequest<{ pagination?: { totalItems?: number } }>(`${rankingsPath}&gainMin=${ranking.gain + 0.0001}`),
+    ]);
+    const pool = poolResult.status === "fulfilled" ? poolResult.value.pagination?.totalItems ?? null : null;
+    const above = aboveResult.status === "fulfilled" ? aboveResult.value.pagination?.totalItems ?? null : null;
+    if (pool != null && above != null) {
+      rankPoolSize = pool;
+      rankPosition = above + 1;
+    }
   }
 
   // eToro's own `count` downsampling parameter on these two endpoints is a
@@ -740,5 +766,7 @@ export async function fetchInvestorExtendedStats(username: string): Promise<Inve
     yearlyGains: toGainPoints(yearlyResult),
     exposureHistory,
     assetAllocationHistory,
+    rankPosition,
+    rankPoolSize,
   };
 }
