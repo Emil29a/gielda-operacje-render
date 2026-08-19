@@ -307,15 +307,34 @@ function buildEventStatement(
     );
 }
 
-function changed(previous: PositionRow, current: PortfolioPosition) {
+// Returns a human-readable description of what changed between two
+// snapshots of the same position (e.g. "dźwignia: 2x → 3x"), or null if
+// nothing crossed the tolerance threshold — this doubles as both the
+// "did anything change" check and the UPDATE event's note text, so the
+// journal can say specifically what happened instead of just "zmienił
+// pozycję" with no further detail.
+function describeChange(previous: PositionRow, current: PortfolioPosition): string | null {
   const diff = (a: number | null, b: number | null, tolerance = 0.01) =>
     a != null && b != null && Math.abs(a - b) >= tolerance;
-  return (
-    diff(previous.investmentPct, current.investmentPct, 0.05) ||
-    diff(previous.leverage, current.leverage) ||
-    diff(previous.takeProfitRate, current.takeProfitRate) ||
-    diff(previous.stopLossRate, current.stopLossRate)
-  );
+  const formatPct = (value: number | null) => value == null ? "—" : `${value.toFixed(2)}%`;
+  const formatLeverage = (value: number | null) => value == null ? "—" : `${value % 1 === 0 ? value.toFixed(0) : value.toFixed(2)}x`;
+  const formatRate = (value: number | null) => value == null ? "brak" : value.toFixed(4);
+
+  const parts: string[] = [];
+  if (diff(previous.investmentPct, current.investmentPct, 0.05)) {
+    parts.push(`wielkość pozycji: ${formatPct(previous.investmentPct)} → ${formatPct(current.investmentPct)}`);
+  }
+  if (diff(previous.leverage, current.leverage)) {
+    parts.push(`dźwignia: ${formatLeverage(previous.leverage)} → ${formatLeverage(current.leverage)}`);
+  }
+  if (diff(previous.takeProfitRate, current.takeProfitRate)) {
+    parts.push(`take-profit: ${formatRate(previous.takeProfitRate)} → ${formatRate(current.takeProfitRate)}`);
+  }
+  if (diff(previous.stopLossRate, current.stopLossRate)) {
+    parts.push(`stop-loss: ${formatRate(previous.stopLossRate)} → ${formatRate(current.stopLossRate)}`);
+  }
+  if (!parts.length) return null;
+  return `Zmieniono ${parts.join(", ")}.`;
 }
 
 // D1 counts every prepared statement executed as its own request against the
@@ -376,11 +395,14 @@ export async function syncPositionsForInvestors(
           d1, investor, "OPEN", position, instrument, observedAt, position.openTimestamp,
           "exact", "Czas otwarcia pochodzi bezpośrednio z bieżącego portfela eToro.",
         ));
-      } else if (changed(before, position)) {
-        statements.push(buildEventStatement(
-          d1, investor, "UPDATE", position, instrument, observedAt, observedAt,
-          "detected", "Zmiana parametrów została wykryta między kolejnymi migawkami.",
-        ));
+      } else {
+        const description = describeChange(before, position);
+        if (description) {
+          statements.push(buildEventStatement(
+            d1, investor, "UPDATE", position, instrument, observedAt, observedAt,
+            "detected", description,
+          ));
+        }
       }
     }
 

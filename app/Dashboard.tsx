@@ -403,11 +403,15 @@ function eventContext(event: TradeEvent) {
   if (!event.isBuy) {
     if (event.eventType === "OPEN") return "Otwarcie pozycji short";
     if (event.eventType === "CLOSE") return "Zamknięcie pozycji short";
-    return "Aktualizacja pozycji short";
+    return event.note || "Aktualizacja pozycji short";
   }
   if (event.eventType === "OPEN") return "Otwarcie pozycji";
   if (event.eventType === "CLOSE") return "Zamknięcie pozycji";
-  return "Aktualizacja pozycji";
+  // For UPDATE events, event.note holds exactly what changed (e.g.
+  // "Zmieniono dźwignia: 2x → 3x."), written by store.ts's describeChange —
+  // showing that instead of a generic "Aktualizacja pozycji" is the whole
+  // point of a journal entry titled "Zmienił pozycję".
+  return event.note || "Aktualizacja pozycji";
 }
 
 function summaryAction(event: TradeEvent) {
