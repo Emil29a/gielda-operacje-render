@@ -140,6 +140,56 @@ async function etoroRequest<T>(path: string): Promise<T> {
   return payload;
 }
 
+// Cheap identity-only resolve: 1 request per investor (just the people
+// lookup) instead of resolveInvestors' 3 (people lookup + 2 tradeinfo
+// periods for gain stats). Enough to get a real cid/name/avatar — which is
+// what unlocks portfolio syncing showing up correctly and the history
+// live-fallback (both need cid) — without paying for gain stats up front.
+// Gain stats missing just renders as "—" in the UI, same as any other
+// not-yet-available field; resolveInvestors can fill them in later, more
+// gradually, once identity resolution for everyone isn't still pending.
+export async function resolveInvestorIdentities(usernames: string[], slotOffset = 0): Promise<Investor[]> {
+  return mapWithConcurrency(
+    usernames,
+    INVESTOR_REQUEST_CONCURRENCY,
+    async (username, index) => {
+      const params = new URLSearchParams({ usernames: username });
+      const data = await etoroRequest<{
+        users?: Array<{
+          realCID?: number;
+          gcid?: number;
+          username: string;
+          avatars?: Array<{ url?: string; width?: number; type?: string }>;
+        }>;
+      }>(`/api/v1/user-info/people?${params}`);
+      const profile = (data.users ?? []).find(
+        (item) => item.username.toLowerCase() === username.toLowerCase(),
+      );
+      if (!profile) throw new Error(`Nie odnaleziono profilu @${username}.`);
+      const avatars = [...(profile.avatars ?? [])].filter((item) => item.url);
+      const originalAvatar = avatars.find((item) =>
+        item.type?.toLowerCase() === "original" || item.url?.includes("/avatars/original/"),
+      );
+      const avatar = originalAvatar?.url || avatars.sort(
+        (a, b) => (b.width ?? 0) - (a.width ?? 0),
+      )[0]?.url;
+      return {
+        slot: slotOffset + index + 1,
+        username: profile.username,
+        cid: profile.realCID || profile.gcid || 0,
+        fullName: profile.username,
+        avatarUrl: avatar || null,
+        riskScore: null,
+        dailyGain: null,
+        gainYtd: null,
+        gainTwoYears: null,
+        copiers: null,
+        updatedAt: new Date().toISOString(),
+      };
+    },
+  );
+}
+
 export async function resolveInvestors(usernames: string[], slotOffset = 0): Promise<Investor[]> {
   return mapWithConcurrency(
     usernames,

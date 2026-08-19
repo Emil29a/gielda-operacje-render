@@ -4,35 +4,11 @@ import {
   fetchInstruments,
   fetchPortfolio,
   fetchPublicHistory,
+  resolveInvestorIdentities,
   resolveInvestors,
 } from "./etoro";
 import { mapWithConcurrency } from "./concurrency";
 import { warsawDateKey } from "./time";
-
-const INVESTOR_REQUEST_CONCURRENCY = 5;
-// Cloudflare Workers cap outbound fetches at 50 per invocation on the free
-// plan. Resolving a profile costs 3 requests (people lookup + 2 tradeinfo
-// periods), so refreshing all 27 tracked investors in one go (~81 requests)
-// can never fit. Profiles are refreshed in small rotating chunks instead —
-// spread the cost across many small, always-in-budget invocations rather
-// than needing a bigger budget (a paid plan) or a single request that just
-// fails.
-const PROFILE_CHUNK_SIZE = 5;
-// syncPortfolios's D1 writes are now batched (see syncPositionsForInvestors
-// in lib/store.ts), but each investor still costs one fetchPortfolio()
-// subrequest, and runScheduledSync also spends a chunk of budget resolving
-// profiles AND warming today's history cache (see below) in the same
-// invocation — so portfolios are refreshed in rotating chunks too, same
-// rationale as PROFILE_CHUNK_SIZE above.
-const POSITION_CHUNK_SIZE = 7;
-// Several open tabs (or, on a future deployment, several visitors) can each
-// independently decide "it's time to sync". Without a shared lock and a
-// minimum interval, they'd pile up overlapping eToro request bursts instead
-// of sharing one result — this makes these functions safe to call from
-// anywhere, any number of times in parallel.
-const POSITION_SYNC_LOCK_TTL_MS = 60 * 1000;
-const MIN_POSITION_SYNC_INTERVAL_MS = 90 * 1000;
-const PROFILE_SYNC_LOCK_TTL_MS = 60 * 1000;
 import {
   ensureSchema,
   getState,
@@ -42,29 +18,91 @@ import {
   syncPositionsForInvestors,
   updateInvestors,
 } from "./store";
-import {
-  hasTrackedUsernames,
-  TRACKED_USERNAMES,
-  trackedInvestorPlaceholders,
-} from "./tracked-investors";
+import { hasTrackedUsernames, TRACKED_USERNAMES } from "./tracked-investors";
 import type { Investor } from "./types";
 
+// Render runs this on a per-visit basis (see app/api/dashboard/route.ts),
+// not a per-invocation-billed Cloudflare Worker with a Cron Trigger to
+// chunk work around. The real constraint is purely eToro's own rate limit,
+// which reacts to *burst* concurrency more than total volume over time — a
+// batch of 5 profile resolutions (3 requests each = 15 at once) was enough
+// to trip a 429 even though the total request count for a whole sync is
+// unremarkable. Every fetch below stays deliberately low-concurrency and
+// paced, in exchange for a full sync simply taking longer.
+const PORTFOLIO_CONCURRENCY = 3;
+const IDENTITY_CONCURRENCY = 3;
+const PROFILE_CONCURRENCY = 2;
+const HISTORY_CONCURRENCY = 3;
+const BATCH_PAUSE_MS = 1_500;
+// How many not-yet-identity-resolved investors to resolve per visit, and
+// how many already-identified-but-stats-missing investors to enrich with
+// full gain stats per visit — small on purpose, so a single page visit's
+// request budget goes mostly to the journal-critical steps (portfolio sync,
+// history) instead of being spent entirely on profile lookups. Convergence
+// to "everyone fully resolved" happens gradually, over several visits.
+const IDENTITY_BATCH_LIMIT = 6;
+const FULL_PROFILE_BATCH_LIMIT = 4;
+
+const POSITION_SYNC_LOCK_TTL_MS = 5 * 60 * 1000;
+const MIN_POSITION_SYNC_INTERVAL_MS = 90 * 1000;
+
+async function pause(ms: number) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Runs resolver(batch) over usernames in small, paced batches — a failed
+// batch (eToro's rate limit reacts to more than just this process, e.g.
+// local dev and the deployed Render instance sharing the same investors)
+// only costs that batch; the loop still moves on with whatever did resolve.
+async function resolvePaced(
+  usernames: string[],
+  concurrency: number,
+  resolver: (batch: string[], offset: number) => Promise<Investor[]>,
+): Promise<Investor[]> {
+  const resolved: Investor[] = [];
+  for (let i = 0; i < usernames.length; i += concurrency) {
+    const batch = usernames.slice(i, i + concurrency);
+    try {
+      resolved.push(...await resolver(batch, i));
+    } catch (error) {
+      console.error("[sync] resolve batch failed, continuing", error instanceof Error ? error.message : error);
+    }
+    if (i + concurrency < usernames.length) await pause(BATCH_PAUSE_MS);
+  }
+  return resolved;
+}
+
+// The journal (dziennik zmian) is driven entirely by position diffing here,
+// keyed by username — it works for every investor regardless of whether
+// their profile has been resolved yet, so this always runs first and gets
+// first claim on the request budget.
 async function syncPortfolios(investors: Investor[]) {
-  const portfolios = await mapWithConcurrency(
+  const attempted = await mapWithConcurrency(
     investors,
-    INVESTOR_REQUEST_CONCURRENCY,
+    PORTFOLIO_CONCURRENCY,
     async (investor) => ({
       investor,
-      positions: await fetchPortfolio(investor.username),
+      // null (not []) on failure: an empty array would tell the diffing
+      // logic in syncPositionsForInvestors "every position this investor
+      // had just closed", which is wrong — a fetch failure means we simply
+      // don't know their current state yet, not that it's now empty. Such
+      // investors are filtered out below and left untouched this tick.
+      positions: await fetchPortfolio(investor.username).catch((error) => {
+        console.error(`[sync] portfolio fetch failed for ${investor.username}, skipping this tick`, error instanceof Error ? error.message : error);
+        return null;
+      }),
     }),
+  );
+  const portfolios = attempted.filter(
+    (item): item is { investor: Investor; positions: NonNullable<typeof item.positions> } => item.positions !== null,
   );
   const instrumentIds = portfolios.flatMap(({ positions }) =>
     positions.map((position) => position.instrumentId),
   );
-  const instrumentList = await fetchInstruments(instrumentIds);
+  const instrumentList = await fetchInstruments(instrumentIds).catch(() => []);
   const exchanges = await fetchExchanges(
     instrumentList.flatMap((item) => item.exchangeId == null ? [] : [item.exchangeId]),
-  );
+  ).catch(() => new Map<number, string>());
   const instruments = new Map(instrumentList.map((item) => [item.instrumentId, {
     ...item,
     exchangeName: item.exchangeId == null ? null : exchanges.get(item.exchangeId) ?? null,
@@ -73,9 +111,24 @@ async function syncPortfolios(investors: Investor[]) {
   await syncPositionsForInvestors(portfolios, instruments, observedAt);
 }
 
+// Warms lib/etoro.ts's D1 history cache for today for every given investor —
+// paced the same way as everything else here. The dashboard route falls
+// back to a live fetch for any investor whose cache this hasn't reached
+// yet, so today's view is always complete even between visits; this is
+// what keeps that fallback rare.
+async function warmHistoryForToday(investors: Investor[]) {
+  const today = warsawDateKey();
+  const resolved = investors.filter((investor) => investor.cid !== 0);
+  for (let i = 0; i < resolved.length; i += HISTORY_CONCURRENCY) {
+    const batch = resolved.slice(i, i + HISTORY_CONCURRENCY);
+    await Promise.all(batch.map((investor) => fetchPublicHistory(investor.cid, today).catch(() => [])));
+    if (i + HISTORY_CONCURRENCY < resolved.length) await pause(BATCH_PAUSE_MS);
+  }
+}
+
 // Seeds tracked_investors with placeholder rows (or keeps existing ones) so
-// syncPortfolios() and resolveProfileChunk() always have something to work
-// with — this never calls eToro, so it's free to run on every check.
+// syncPortfolios() and the rest always have something to work with — this
+// never calls eToro, so it's free to run on every check.
 export async function ensureBootstrapped(): Promise<{ investors: Investor[]; justBootstrapped: boolean }> {
   const investors = await listInvestors();
   const source = await getState("data_source");
@@ -104,46 +157,18 @@ export async function ensureBootstrapped(): Promise<{ investors: Investor[]; jus
   return { investors: await listInvestors(), justBootstrapped: true };
 }
 
-// Refreshes one rotating slice of investor profiles (name, avatar, gains,
-// copiers) per call, cycling through everyone over several calls instead of
-// all at once — see PROFILE_CHUNK_SIZE above for why.
-async function resolveProfileChunk(): Promise<void> {
-  const [lockUntilRaw, cursorRaw] = await Promise.all([
-    getState("profile_sync_lock_until"),
-    getState("profile_resolve_cursor"),
-  ]);
-  const now = Date.now();
-  if (lockUntilRaw != null && new Date(lockUntilRaw).getTime() > now) return;
-
-  await setState("profile_sync_lock_until", new Date(now + PROFILE_SYNC_LOCK_TTL_MS).toISOString());
-  try {
-    const usernames = [...TRACKED_USERNAMES];
-    const cursor = cursorRaw ? Number(cursorRaw) || 0 : 0;
-    const startIndex = cursor % usernames.length;
-    const chunk = usernames.slice(startIndex, startIndex + PROFILE_CHUNK_SIZE);
-    const wrapCount = PROFILE_CHUNK_SIZE - chunk.length;
-    const wrapped = wrapCount > 0 ? usernames.slice(0, wrapCount) : [];
-
-    const [resolvedChunk, resolvedWrapped] = await Promise.all([
-      chunk.length ? resolveInvestors(chunk, startIndex) : Promise.resolve([]),
-      wrapped.length ? resolveInvestors(wrapped, 0) : Promise.resolve([]),
-    ]);
-    const resolved = [...resolvedChunk, ...resolvedWrapped];
-    if (resolved.length) await updateInvestors(resolved);
-    await setState("profile_resolve_cursor", String((startIndex + PROFILE_CHUNK_SIZE) % usernames.length));
-  } finally {
-    await setState("profile_sync_lock_until", new Date(0).toISOString()).catch(() => {});
-  }
-}
-
-// Silent, lightweight refresh of just today's position snapshots — driven by
-// someone actually viewing today's data, or an explicit "Odśwież teraz"
-// click, never a hidden background timer, and never surfaced as a "sync
-// failed" notice since it's opportunistic.
+// Runs on every dashboard visit for today (see app/api/dashboard/route.ts),
+// locked/throttled (90s minimum interval) so rapid repeat visits are cheap
+// no-ops instead of piling up eToro requests. Order matters here: the
+// journal (positions/events) is the priority, so it goes first and always
+// gets a chance to run even if eToro starts rate-limiting partway through —
+// profile identity and gain-stat enrichment are lower priority and limited
+// to a small batch per visit, converging gradually across many visits
+// rather than trying (and risking a 429 on) everyone at once.
 export async function synchronizePositionsOnly() {
   if (etoroMode() !== "live") return;
   await ensureSchema();
-  const { investors } = await ensureBootstrapped();
+  let { investors } = await ensureBootstrapped();
   if (!investors.length) return;
 
   const [lockUntilRaw, lastSyncRaw] = await Promise.all([
@@ -158,62 +183,50 @@ export async function synchronizePositionsOnly() {
 
   await setState("position_sync_lock_until", new Date(now + POSITION_SYNC_LOCK_TTL_MS).toISOString());
   try {
-    await syncPortfolios(investors);
-    await setState("last_position_sync", new Date().toISOString());
+    // 1. The journal: works for everyone regardless of profile resolution.
+    try {
+      await syncPortfolios(investors);
+      await setState("last_position_sync", new Date().toISOString());
+    } catch (error) {
+      console.error("[sync] portfolio sync step failed", error instanceof Error ? error.message : error);
+    }
+
+    // 2. Cheap identity (cid/name/avatar) for a small batch of investors
+    // that don't have it yet — 1 request each, unlocks history + display.
+    const unidentified = investors.filter((investor) => investor.cid === 0).slice(0, IDENTITY_BATCH_LIMIT);
+    if (unidentified.length) {
+      const resolved = await resolvePaced(
+        unidentified.map((investor) => investor.username),
+        IDENTITY_CONCURRENCY,
+        (batch, offset) => resolveInvestorIdentities(batch, offset),
+      );
+      if (resolved.length) await updateInvestors(resolved);
+      investors = await listInvestors();
+    }
+
+    // 3. Full profile (gain stats) for a small batch of already-identified
+    // investors that are still missing it — 3 requests each, the most
+    // expensive step, so it stays smallest and last.
+    const missingStats = investors.filter(
+      (investor) => investor.cid !== 0 && investor.gainYtd == null,
+    ).slice(0, FULL_PROFILE_BATCH_LIMIT);
+    if (missingStats.length) {
+      const resolved = await resolvePaced(
+        missingStats.map((investor) => investor.username),
+        PROFILE_CONCURRENCY,
+        (batch, offset) => resolveInvestors(batch, offset),
+      );
+      if (resolved.length) await updateInvestors(resolved);
+      investors = await listInvestors();
+    }
+
+    // 4. Today's precise history — also only for investors with a cid.
+    try {
+      await warmHistoryForToday(investors);
+    } catch (error) {
+      console.error("[sync] history warm step failed", error instanceof Error ? error.message : error);
+    }
   } finally {
     await setState("position_sync_lock_until", new Date(0).toISOString()).catch(() => {});
   }
-}
-
-// Entry point for the Cloudflare Cron Trigger (see worker/index.ts's
-// `scheduled` handler) — runs every few minutes, on Cloudflare's own
-// infrastructure, never in the browser. Each tick refreshes one rotating
-// chunk of investors' portfolios (POSITION_CHUNK_SIZE) plus one profile
-// chunk (PROFILE_CHUNK_SIZE) — comfortably under the free plan's
-// 50-per-invocation cap on both outbound fetches and D1/binding calls,
-// unlike trying to sync everyone in a single tick.
-export async function runScheduledSync() {
-  await ensureSchema();
-  const mode = etoroMode();
-  if (mode === "unconfigured") {
-    const investors = await listInvestors();
-    const source = await getState("data_source");
-    if (source !== "awaiting-etoro-keys" || !hasTrackedUsernames(investors)) {
-      await replaceInvestors(trackedInvestorPlaceholders(), true);
-      await setState("data_source", "awaiting-etoro-keys");
-    }
-    return;
-  }
-  const { investors } = await ensureBootstrapped();
-  if (!investors.length) return;
-
-  const cursorRaw = await getState("position_sync_cursor");
-  const cursor = cursorRaw ? Number(cursorRaw) || 0 : 0;
-  const startIndex = cursor % investors.length;
-  const chunk = investors.slice(startIndex, startIndex + POSITION_CHUNK_SIZE);
-  const wrapCount = POSITION_CHUNK_SIZE - chunk.length;
-  const wrapped = wrapCount > 0 ? investors.slice(0, wrapCount) : [];
-
-  const positionChunk = [...chunk, ...wrapped];
-  await syncPortfolios(positionChunk);
-  await setState("position_sync_cursor", String((startIndex + POSITION_CHUNK_SIZE) % investors.length));
-  await setState("last_position_sync", new Date().toISOString());
-
-  // Warms lib/etoro.ts's D1 history cache (3 min TTL, same as this cron
-  // interval) for today, for the same investors just portfolio-synced. Real
-  // dashboard visits are sporadic, not every 3 minutes, so without this the
-  // cache is cold on nearly every visit and each one triggers a live,
-  // 27-investor fan-out to eToro's history endpoint directly in the request
-  // path — that was the main source of the slow/hanging dashboard loads
-  // (Cloudflare error 1102 / request cancellations) even after adding
-  // per-call timeouts. Warming it here means a real visit almost always
-  // finds a fresh cache entry instead.
-  const today = warsawDateKey();
-  await mapWithConcurrency(
-    positionChunk.filter((investor) => investor.cid !== 0),
-    INVESTOR_REQUEST_CONCURRENCY,
-    (investor) => fetchPublicHistory(investor.cid, today).catch(() => []),
-  );
-
-  await resolveProfileChunk();
 }

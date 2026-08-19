@@ -189,13 +189,21 @@ export async function updateInvestors(investors: Investor[]) {
     investors.map((investor) =>
       d1
         .prepare(
+          // slot (the primary key) is deliberately not updated here: it's
+          // assigned once when a row is first seeded and must never change
+          // afterward. Callers resolving a small subset of investors (e.g.
+          // synchronizePositionsOnly's paced identity/profile batches) only
+          // know each investor's position *within that batch*, not their
+          // true slot among all tracked investors — writing that batch-local
+          // number over the real slot risked colliding with another
+          // investor's slot (both being a small number like 0-5), which
+          // fails on tracked_investors' UNIQUE/PRIMARY KEY constraint.
           `UPDATE tracked_investors
-          SET slot = ?, cid = ?, full_name = ?, avatar_url = ?, risk_score = ?,
+          SET cid = ?, full_name = ?, avatar_url = ?, risk_score = ?,
               daily_gain = ?, gain_ytd = ?, gain_two_years = ?, copiers = ?, updated_at = ?
-          WHERE username = ?`,
+          WHERE LOWER(username) = LOWER(?)`,
         )
         .bind(
-          investor.slot,
           investor.cid,
           investor.fullName,
           investor.avatarUrl,

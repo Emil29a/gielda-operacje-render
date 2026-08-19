@@ -1,7 +1,7 @@
-import { etoroMode, fetchExchanges, fetchInstruments, fetchMarketRates, getCachedPublicHistory, priceChange } from "../../../lib/etoro";
+import { etoroMode, fetchExchanges, fetchInstruments, fetchMarketRates, fetchPublicHistory, getCachedPublicHistory, priceChange } from "../../../lib/etoro";
 import { ensureSchema, getState, listCurrentPositions, listEvents } from "../../../lib/store";
 import type { StoredPosition } from "../../../lib/store";
-import { ensureBootstrapped } from "../../../lib/sync";
+import { ensureBootstrapped, synchronizePositionsOnly } from "../../../lib/sync";
 import { isValidDateKey, warsawDateKey, WARSAW_TIMEZONE } from "../../../lib/time";
 import type { DashboardPayload, Instrument, TradeEvent } from "../../../lib/types";
 import { mapWithConcurrency, withDeadline } from "../../../lib/concurrency";
@@ -20,37 +20,45 @@ export async function GET(request: Request) {
     await ensureSchema();
     const mode = etoroMode();
     const url = new URL(request.url);
-    // All eToro syncing (profiles + portfolios) runs on Cloudflare's own Cron
-    // Trigger (see worker/index.ts's scheduled handler and lib/sync.ts),
-    // never inside a request — the free plan's 50-subrequest-per-invocation
-    // cap can't fit 27 investors' worth of sync work alongside today's
-    // history fetch in a single request. ensureBootstrapped only seeds
-    // placeholder rows locally (no eToro calls), so the UI has something to
-    // show before the first cron tick lands.
+    // ensureBootstrapped only seeds placeholder rows locally (no eToro
+    // calls), so the UI has something to show even before any sync happens.
     const { investors } = await ensureBootstrapped();
     const requestedDate = url.searchParams.get("date");
     const selectedDate = isValidDateKey(requestedDate)
       ? requestedDate!
       : warsawDateKey();
+    const isToday = selectedDate === warsawDateKey();
+    // No background timer polls eToro on its own — profile/portfolio
+    // syncing only happens because someone is actually looking at today,
+    // right here. synchronizePositionsOnly() has its own lock and a 90s
+    // minimum interval, so rapid repeat visits are cheap no-ops rather than
+    // piling up eToro requests.
+    if (isToday) {
+      await synchronizePositionsOnly().catch(() => {});
+    }
     const storedPositions = await listCurrentPositions();
     const snapshotEvents = (await listEvents()).filter(
       (event) => warsawDateKey(event.occurredAt) === selectedDate,
     );
     const unavailableHistory: string[] = [];
-    // The request path never live-fetches from eToro for history — it only
-    // reads whatever lib/sync.ts's cron tick has already cached (D1 read,
-    // no network call). A live 27-investor fan-out to eToro directly in the
-    // request path was the actual root cause of the slow/hanging dashboard
-    // loads (Cloudflare error 1102, request cancellations): even with a
-    // per-call timeout and full parallelism, the whole response stayed
-    // hostage to eToro's live latency. This trades a little freshness for an
-    // investor the cron hasn't reached yet in its rotation (flagged below,
-    // same as any other "unavailable" case) for a response that's always
-    // fast, bounded by D1 read speed instead of an external API's health.
+    // Today always loads completely: try the cache first (fast — warmed by
+    // the synchronizePositionsOnly() call above), and for any investor it
+    // hasn't reached yet, fall back to a live fetch right here rather than
+    // just showing them as unavailable. The fallback stays gently paced
+    // (HISTORY_FETCH_CONCURRENCY), not a 27-way burst, to respect eToro's
+    // rate limit — the lesson from the burst-triggered 429s earlier.
+    // Any other date is lower priority (the user only sees it by explicitly
+    // clicking through) and stays cache-only, with no live fallback.
+    const HISTORY_FETCH_CONCURRENCY = 3;
     const historyByInvestor = mode === "live"
-      ? await mapWithConcurrency(investors, Math.max(investors.length, 1), async (investor) => {
+      ? await mapWithConcurrency(investors, HISTORY_FETCH_CONCURRENCY, async (investor) => {
           const { positions, cached } = await getCachedPublicHistory(investor.cid, selectedDate);
-          if (!cached) unavailableHistory.push(investor.username);
+          if (cached) return { investor, positions };
+          if (isToday && investor.cid !== 0) {
+            const livePositions = await fetchPublicHistory(investor.cid, selectedDate).catch(() => null);
+            if (livePositions) return { investor, positions: livePositions };
+          }
+          unavailableHistory.push(investor.username);
           return { investor, positions };
         })
       : [];
