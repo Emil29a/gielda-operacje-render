@@ -1,4 +1,4 @@
-import type { GainPoint, HistoricalPosition, Instrument, InvestorExtendedStats, Investor, MarketRate, PortfolioPosition } from "./types";
+import type { AssetAllocationSeries, ExposurePoint, GainPoint, HistoricalPosition, Instrument, InvestorExtendedStats, Investor, MarketRate, PortfolioPosition } from "./types";
 import { shiftDateKey, warsawDateKey } from "./time";
 import { mapWithConcurrency } from "./concurrency";
 import { findKnownExchangeNames, findKnownInstruments, getState, getStateWithTimestamp, setState } from "./store";
@@ -185,6 +185,7 @@ export async function resolveInvestorIdentities(usernames: string[], slotOffset 
         gainTwoYears: null,
         copiers: null,
         updatedAt: new Date().toISOString(),
+        activeSince: null,
       };
     },
   );
@@ -217,9 +218,18 @@ export async function resolveInvestors(usernames: string[], slotOffset = 0): Pro
         isPopularInvestor?: boolean;
       };
       const tradeInfoPath = `/api/v1/user-info/people/${encodeURIComponent(username)}/tradeinfo`;
-      const [currentYear, lastTwoYears] = await Promise.all([
+      // tradeinfo's own weeksSinceRegistration field is unreliable (verified
+      // off by years against real registration dates on multiple accounts),
+      // so registration date comes from a separate, cheap source instead:
+      // the earliest entry in this investor's full monthly gain history —
+      // its timestamp lines up exactly with the real "active since" date
+      // shown on eToro's own profile pages.
+      const [currentYear, lastTwoYears, gainHistory] = await Promise.all([
         etoroRequest<TradeInfo>(`${tradeInfoPath}?period=CurrYear`),
         etoroRequest<TradeInfo>(`${tradeInfoPath}?period=LastTwoYears`),
+        etoroRequest<{ monthly?: Array<{ timestamp: string }> }>(
+          `/api/v1/user-info/people/${encodeURIComponent(username)}/gain`,
+        ).catch(() => ({ monthly: [] })),
       ]);
       if (!currentYear.isPopularInvestor) {
         throw new Error(`@${username} nie jest obecnie oznaczony jako Popular Investor.`);
@@ -243,6 +253,7 @@ export async function resolveInvestors(usernames: string[], slotOffset = 0): Pro
         gainTwoYears: lastTwoYears.gain ?? null,
         copiers: currentYear.copiers ?? null,
         updatedAt: new Date().toISOString(),
+        activeSince: gainHistory.monthly?.[0]?.timestamp ?? null,
       };
     },
   );
@@ -611,7 +622,7 @@ const ASSET_CLASS_NAMES: Record<number, string> = {
 // years) — eToro's API returns them but they don't reflect reality, so
 // showing them would just be confidently wrong.
 export async function fetchInvestorExtendedStats(username: string): Promise<InvestorExtendedStats> {
-  const [rankingResult, monthlyResult, yearlyResult] = await Promise.allSettled([
+  const [rankingResult, monthlyResult, yearlyResult, exposureResult, assetsResult] = await Promise.allSettled([
     etoroRequest<{
       data?: {
         winRatio?: number;
@@ -632,18 +643,83 @@ export async function fetchInvestorExtendedStats(username: string): Promise<Inve
     etoroRequest<{ gains?: Array<{ date: string; gain: number }> }>(
       `/api/v2/portfolios/${encodeURIComponent(username)}/gain/yearly?count=6`,
     ),
+    etoroRequest<{ results?: Array<{ date: string; absExposurePct: number }> }>(
+      `/api/v2/portfolios/${encodeURIComponent(username)}/exposure/history?period=OneMonthAgo`,
+    ),
+    etoroRequest<{
+      results?: Array<{
+        date: string;
+        cashPct: number;
+        assets?: Array<{ instrumentId: number; symbol: string; investedPct: number }>;
+      }>;
+    }>(`/api/v2/portfolios/${encodeURIComponent(username)}/assets/history?period=OneMonthAgo`),
   ]);
 
   const ranking = rankingResult.status === "fulfilled" ? rankingResult.value.data ?? null : null;
+  // eToro returns gain history oldest-first; reversed here so both the
+  // yearly and monthly chip rows read newest-first, matching the rest of
+  // the dashboard's "most recent first" convention.
   const toGainPoints = (result: typeof monthlyResult): GainPoint[] =>
     result.status === "fulfilled"
-      ? (result.value.gains ?? []).map((point) => ({ date: point.date, gain: point.gain * 100 }))
+      ? (result.value.gains ?? []).map((point) => ({ date: point.date, gain: point.gain * 100 })).reverse()
       : [];
 
   let topTradedInstrumentSymbol: string | null = null;
   if (ranking?.topTradedInstrumentId != null) {
     const [instrument] = await fetchInstruments([ranking.topTradedInstrumentId]).catch(() => []);
     topTradedInstrumentSymbol = instrument?.symbol ?? null;
+  }
+
+  // eToro's own `count` downsampling parameter on these two endpoints is a
+  // documented no-op (still returns every raw day regardless of the value
+  // passed), so a ~30-50 point daily series is thinned client-side instead —
+  // plenty of daily granularity is wasted on a small inline chart anyway.
+  const MAX_CHART_POINTS = 20;
+  const downsample = <T,>(items: T[], maxPoints: number): T[] => {
+    if (items.length <= maxPoints) return items;
+    const step = (items.length - 1) / (maxPoints - 1);
+    return Array.from({ length: maxPoints }, (_, index) => items[Math.round(index * step)]);
+  };
+
+  const exposureHistory: ExposurePoint[] = exposureResult.status === "fulfilled"
+    ? downsample(
+      (exposureResult.value.results ?? []).map((point) => ({
+        date: point.date,
+        absExposurePct: point.absExposurePct * 100,
+      })),
+      MAX_CHART_POINTS,
+    )
+    : [];
+
+  // eToro's per-instrument exposureItems breakdown consistently comes back
+  // empty regardless of investor size (verified on a 495-position account),
+  // so exposureHistory above only ever carries the aggregate line — the
+  // richer per-instrument stacked view instead uses assets/history, which
+  // does populate its per-instrument list.
+  let assetAllocationHistory: AssetAllocationSeries = { labels: [], points: [] };
+  if (assetsResult.status === "fulfilled") {
+    const rawDays = downsample(assetsResult.value.results ?? [], MAX_CHART_POINTS);
+    const totalsBySymbol = new Map<string, number>();
+    for (const day of rawDays) {
+      for (const asset of day.assets ?? []) {
+        if (!asset.symbol) continue;
+        totalsBySymbol.set(asset.symbol, (totalsBySymbol.get(asset.symbol) ?? 0) + asset.investedPct);
+      }
+    }
+    const topSymbols = [...totalsBySymbol.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([symbol]) => symbol);
+    const labels = ["Gotówka", ...topSymbols, "Inne"];
+    const points = rawDays.map((day) => {
+      const bySymbol = new Map((day.assets ?? []).filter((a) => a.symbol).map((a) => [a.symbol, a.investedPct]));
+      const topValues = topSymbols.map((symbol) => (bySymbol.get(symbol) ?? 0) * 100);
+      const topSum = topSymbols.reduce((sum, symbol) => sum + (bySymbol.get(symbol) ?? 0), 0);
+      const allInvested = (day.assets ?? []).reduce((sum, asset) => sum + asset.investedPct, 0);
+      const other = Math.max(0, allInvested - topSum) * 100;
+      return { date: day.date, values: [day.cashPct * 100, ...topValues, other] };
+    });
+    assetAllocationHistory = { labels, points };
   }
 
   return {
@@ -662,5 +738,7 @@ export async function fetchInvestorExtendedStats(username: string): Promise<Inve
       : null,
     monthlyGains: toGainPoints(monthlyResult),
     yearlyGains: toGainPoints(yearlyResult),
+    exposureHistory,
+    assetAllocationHistory,
   };
 }

@@ -10,6 +10,7 @@ export type Investor = {
   gainTwoYears: number | null;
   copiers: number | null;
   updatedAt: string;
+  activeSince: string | null;
   openPositions?: number;
 };
 
@@ -112,6 +113,16 @@ export type GainPoint = {
   gain: number;
 };
 
+export type ExposurePoint = {
+  date: string;
+  absExposurePct: number;
+};
+
+export type AssetAllocationSeries = {
+  labels: string[];
+  points: Array<{ date: string; values: number[] }>;
+};
+
 export type InvestorExtendedStats = {
   winRatio: number | null;
   trades: number | null;
@@ -126,4 +137,6 @@ export type InvestorExtendedStats = {
   topTradedAssetClass: string | null;
   monthlyGains: GainPoint[];
   yearlyGains: GainPoint[];
+  exposureHistory: ExposurePoint[];
+  assetAllocationHistory: AssetAllocationSeries;
 };

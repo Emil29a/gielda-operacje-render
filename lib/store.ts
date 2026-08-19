@@ -97,6 +97,9 @@ export async function ensureSchema() {
       d1.prepare("ALTER TABLE tracked_investors ADD COLUMN gain_two_years REAL"),
     );
   }
+  if (!columnNames.has("active_since")) {
+    additions.push(d1.prepare("ALTER TABLE tracked_investors ADD COLUMN active_since TEXT"));
+  }
   if (additions.length) await d1.batch(additions);
 
   const positionColumns = await d1
@@ -120,13 +123,13 @@ export async function listInvestors(): Promise<Investor[]> {
     .prepare(
       `SELECT i.slot, i.username, i.cid, i.full_name, i.avatar_url,
         i.risk_score, i.daily_gain, i.gain_ytd, i.gain_two_years,
-        i.copiers, i.updated_at,
+        i.copiers, i.updated_at, i.active_since,
         COUNT(p.position_id) AS open_positions
       FROM tracked_investors i
       LEFT JOIN current_positions p ON p.username = i.username
       GROUP BY i.slot, i.username, i.cid, i.full_name, i.avatar_url,
         i.risk_score, i.daily_gain, i.gain_ytd, i.gain_two_years,
-        i.copiers, i.updated_at
+        i.copiers, i.updated_at, i.active_since
       ORDER BY i.slot`,
     )
     .all<Record<string, unknown>>();
@@ -142,6 +145,7 @@ export async function listInvestors(): Promise<Investor[]> {
     gainTwoYears: row.gain_two_years == null ? null : Number(row.gain_two_years),
     copiers: row.copiers == null ? null : Number(row.copiers),
     updatedAt: String(row.updated_at),
+    activeSince: row.active_since ? String(row.active_since) : null,
     openPositions: Number(row.open_positions ?? 0),
   }));
 }
@@ -165,8 +169,8 @@ export async function replaceInvestors(investors: Investor[], clearHistory = fal
         .prepare(
           `INSERT INTO tracked_investors
           (slot, username, cid, full_name, avatar_url, risk_score, daily_gain,
-           gain_ytd, gain_two_years, copiers, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           gain_ytd, gain_two_years, copiers, updated_at, active_since)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .bind(
           index + 1,
@@ -180,6 +184,7 @@ export async function replaceInvestors(investors: Investor[], clearHistory = fal
           investor.gainTwoYears,
           investor.copiers,
           investor.updatedAt,
+          investor.activeSince ?? null,
         ),
     ),
   );
@@ -200,9 +205,15 @@ export async function updateInvestors(investors: Investor[]) {
           // number over the real slot risked colliding with another
           // investor's slot (both being a small number like 0-5), which
           // fails on tracked_investors' UNIQUE/PRIMARY KEY constraint.
+          // active_since uses COALESCE(new, existing): the cheap
+          // identity-only resolve (resolveInvestorIdentities) doesn't fetch
+          // gain history, so it always passes null here — without COALESCE,
+          // running it for an investor who'd already gone through a full
+          // resolve would wipe out a registration date that call already had.
           `UPDATE tracked_investors
           SET cid = ?, full_name = ?, avatar_url = ?, risk_score = ?,
-              daily_gain = ?, gain_ytd = ?, gain_two_years = ?, copiers = ?, updated_at = ?
+              daily_gain = ?, gain_ytd = ?, gain_two_years = ?, copiers = ?, updated_at = ?,
+              active_since = COALESCE(?, active_since)
           WHERE LOWER(username) = LOWER(?)`,
         )
         .bind(
@@ -215,6 +226,7 @@ export async function updateInvestors(investors: Investor[]) {
           investor.gainTwoYears,
           investor.copiers,
           investor.updatedAt,
+          investor.activeSince ?? null,
           investor.username,
         ),
     ),

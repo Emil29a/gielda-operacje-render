@@ -340,6 +340,19 @@ button:disabled { opacity: .55; cursor: wait; }
 .gain-chip.positive { color: var(--green); }
 .gain-chip.negative { color: var(--coral); }
 .alert.compact { width: auto; margin: 0; padding: 6px 10px; font-size: 10px; }
+.extended-stats-charts { display: grid; gap: 10px; margin-top: 8px; }
+.extended-stats-charts > span { display: block; }
+.extended-stats-charts small { display: block; margin-bottom: 3px; color: var(--muted); font-size: 9px; }
+.chart-empty { color: var(--muted); font-size: 9px; }
+.chart-block { display: grid; gap: 4px; }
+.exposure-chart, .assets-chart { width: 100%; height: 72px; display: block; }
+.exposure-area { fill: rgba(11,122,90,.14); stroke: none; }
+.exposure-line { fill: none; stroke: var(--green); stroke-width: 1.6; vector-effect: non-scaling-stroke; }
+.chart-footnote { display: flex; align-items: center; justify-content: space-between; color: var(--muted); font-size: 8px; }
+.chart-footnote strong { color: var(--ink); font-size: 9px; }
+.chart-legend { display: flex; flex-wrap: wrap; gap: 5px 10px; }
+.chart-legend > span { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 8px; }
+.chart-legend i { width: 8px; height: 8px; border-radius: 2px; flex: 0 0 auto; }
 .portfolio-recent { flex: 0 0 auto; padding: 10px 14px 12px; border-bottom: 1px solid var(--line); background: rgba(16,37,63,.035); }
 .portfolio-recent-heading { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin-bottom: 8px; }
 .portfolio-recent-heading > span { display: grid; gap: 2px; }

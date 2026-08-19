@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { CurrentPortfolioPosition, DashboardPayload, GainPoint, Investor, InvestorExtendedStats, TradeEvent } from "../lib/types";
+import type { AssetAllocationSeries, CurrentPortfolioPosition, DashboardPayload, ExposurePoint, GainPoint, Investor, InvestorExtendedStats, TradeEvent } from "../lib/types";
 import {
   formatWarsawMoment,
   isWeekendDateKey,
@@ -126,6 +126,16 @@ function formatRecentMoment(value: string) {
 function formatQuickDate(value: string) {
   const [year, month, day] = value.split("-");
   return `${day}.${month}.${year}`;
+}
+
+function formatDateOnly(value: string | null) {
+  if (!value) return "—";
+  return new Intl.DateTimeFormat("pl-PL", {
+    timeZone: "Europe/Warsaw",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  }).format(new Date(value));
 }
 
 const POLISH_MONTHS = [
@@ -524,6 +534,7 @@ function InvestorCard({
         <span><small>Ryzyko</small><strong>{formatNumber(investor.riskScore)}/10</strong></span>
         <span><small>Otwarte</small><strong>{investor.openPositions ?? 0}</strong></span>
         <span><small>Liczba kopiujących</small><strong>{formatNumber(investor.copiers)}</strong></span>
+        <span><small>Aktywny od</small><strong>{formatDateOnly(investor.activeSince)}</strong></span>
       </div>
       <div className="investor-actions">
         <button type="button" onClick={onOpenPortfolio}>Zobacz portfel</button>
@@ -555,6 +566,80 @@ function GainChips({ points, yearOnly = false }: { points: GainPoint[]; yearOnly
           {formatPercent(point.gain, true)}
         </span>
       ))}
+    </div>
+  );
+}
+
+const ALLOCATION_CHART_COLORS = ["#637082", "#0b7a5a", "#28659f", "#c95f42", "#b94335", "#8a6fb0", "#c9a227", "#a9a397"];
+
+function ExposureChart({ points }: { points: ExposurePoint[] }) {
+  if (points.length < 2) return <span className="chart-empty">brak danych</span>;
+  const width = 560;
+  const height = 90;
+  const padding = 4;
+  const values = points.map((point) => point.absExposurePct);
+  const max = Math.max(...values, 1);
+  const min = Math.min(0, ...values);
+  const range = max - min || 1;
+  const stepX = (width - padding * 2) / (points.length - 1);
+  const toY = (value: number) => height - padding - ((value - min) / range) * (height - padding * 2);
+  const linePoints = points.map((point, index) => `${padding + index * stepX},${toY(point.absExposurePct)}`).join(" ");
+  const areaPoints = `${padding},${height - padding} ${linePoints} ${width - padding},${height - padding}`;
+  const last = points[points.length - 1];
+  return (
+    <div className="chart-block">
+      <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" className="exposure-chart" role="img" aria-label="Ekspozycja portfela w czasie">
+        <polygon points={areaPoints} className="exposure-area" />
+        <polyline points={linePoints} className="exposure-line" />
+      </svg>
+      <div className="chart-footnote">
+        <span>{formatQuickDate(points[0].date)}</span>
+        <span>ostatnio: <strong>{formatPercent(last.absExposurePct)}</strong></span>
+        <span>{formatQuickDate(last.date)}</span>
+      </div>
+    </div>
+  );
+}
+
+function AssetAllocationChart({ series }: { series: AssetAllocationSeries }) {
+  if (series.points.length < 2) return <span className="chart-empty">brak danych</span>;
+  const width = 560;
+  const height = 110;
+  const padding = 4;
+  const stepX = (width - padding * 2) / (series.points.length - 1);
+  const stacks = series.points.map((point) => {
+    let acc = 0;
+    return point.values.map((value): [number, number] => {
+      const start = acc;
+      acc += Math.max(0, value);
+      return [start, acc];
+    });
+  });
+  const maxTotal = Math.max(...stacks.map((stack) => stack[stack.length - 1]?.[1] ?? 0), 1);
+  const toY = (value: number) => height - padding - (value / maxTotal) * (height - padding * 2);
+  return (
+    <div className="chart-block">
+      <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" className="assets-chart" role="img" aria-label="Skład portfela w czasie">
+        {series.labels.map((label, seriesIndex) => {
+          const topLine = series.points.map((_, index) => `${padding + index * stepX},${toY(stacks[index][seriesIndex][1])}`);
+          const bottomLine = series.points.map((_, index) => `${padding + index * stepX},${toY(stacks[index][seriesIndex][0])}`).reverse();
+          return (
+            <polygon
+              key={label}
+              points={[...topLine, ...bottomLine].join(" ")}
+              fill={ALLOCATION_CHART_COLORS[seriesIndex % ALLOCATION_CHART_COLORS.length]}
+            />
+          );
+        })}
+      </svg>
+      <div className="chart-legend">
+        {series.labels.map((label, index) => (
+          <span key={label}>
+            <i style={{ background: ALLOCATION_CHART_COLORS[index % ALLOCATION_CHART_COLORS.length] }} />
+            {label}
+          </span>
+        ))}
+      </div>
     </div>
   );
 }
@@ -602,6 +687,10 @@ function ExtendedStatsSection({
           <div className="extended-stats-gains">
             <span><small>Wynik roczny</small><GainChips points={stats.yearlyGains} yearOnly /></span>
             <span><small>Wynik miesięczny (ost. 12 mies.)</small><GainChips points={stats.monthlyGains} /></span>
+          </div>
+          <div className="extended-stats-charts">
+            <span><small>Ekspozycja portfela (ost. 30 dni)</small><ExposureChart points={stats.exposureHistory} /></span>
+            <span><small>Skład portfela wg instrumentu (ost. 30 dni)</small><AssetAllocationChart series={stats.assetAllocationHistory} /></span>
           </div>
         </>
       )}
@@ -678,6 +767,7 @@ function PortfolioDialog({
               <h2 id="portfolio-title">{investor.fullName}</h2>
               <p>
                 @{investor.username} · eToro CID {investor.cid} · <strong>{formatNumber(investor.copiers)}</strong> kopiujących
+                {" · "}Aktywny od <strong>{formatDateOnly(investor.activeSince)}</strong>
                 {" · "}
                 <a
                   href={`https://www.etoro.com/pl/people/${encodeURIComponent(investor.username)}`}

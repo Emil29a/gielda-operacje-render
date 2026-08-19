@@ -44,6 +44,7 @@ export function trackedInvestorPlaceholders(): Investor[] {
     gainTwoYears: null,
     copiers: null,
     updatedAt,
+    activeSince: null,
   }));
 }
 
