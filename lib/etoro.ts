@@ -662,6 +662,26 @@ function toFeedPosts(result: PromiseSettledResult<RawFeedResponse>): FeedPost[] 
   });
 }
 
+// eToro posts reference instruments as cashtags ($AAPL, $BRK.B, $SKHY) —
+// Google Translate has no notion of these and will sometimes mangle them
+// (translating a ticker that happens to spell a real word, or dropping the
+// $). Swapped out for placeholder tokens unlikely to be touched by
+// translation, then swapped back in after.
+const TICKER_PATTERN = /\$[A-Za-z][A-Za-z0-9.]{0,9}/g;
+
+export function protectTickers(text: string): { text: string; tickers: string[] } {
+  const tickers: string[] = [];
+  const protectedText = text.replace(TICKER_PATTERN, (match) => {
+    tickers.push(match);
+    return `⟦${tickers.length - 1}⟧`;
+  });
+  return { text: protectedText, tickers };
+}
+
+export function restoreTickers(text: string, tickers: string[]): string {
+  return text.replace(/⟦\s*(\d+)\s*⟧/g, (_, index) => tickers[Number(index)] ?? "");
+}
+
 // eToro's own API has no translation endpoint, so this calls Google
 // Translate's unofficial (undocumented, no API key required) single-string
 // endpoint — the same one many open-source translation tools use. Best
@@ -671,14 +691,14 @@ function toFeedPosts(result: PromiseSettledResult<RawFeedResponse>): FeedPost[] 
 // this endpoint's URL-length tolerance and because posts already get
 // truncated to ~240 chars for display anyway.
 async function translateToPolish(text: string): Promise<string> {
-  const trimmed = text.slice(0, 1800);
+  const { text: withPlaceholders, tickers } = protectTickers(text.slice(0, 1800));
   try {
-    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=pl&dt=t&q=${encodeURIComponent(trimmed)}`;
+    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=pl&dt=t&q=${encodeURIComponent(withPlaceholders)}`;
     const response = await fetch(url, { signal: AbortSignal.timeout(6000) });
     if (!response.ok) return text;
     const data = (await response.json()) as [Array<[string, string]>] | null;
     const translated = data?.[0]?.map((segment) => segment[0]).join("");
-    return translated || text;
+    return translated ? restoreTickers(translated, tickers) : text;
   } catch {
     return text;
   }

@@ -179,6 +179,7 @@ button:disabled { opacity: .55; cursor: wait; }
 .filter-row button.active .filter-investor-name strong, .filter-row button.active .filter-investor-gains b { color: #fff; }
 .day-summary { margin: 0 0 9px; padding: 8px 9px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.28); }
 .day-summary.is-loading { border-color: rgba(31,95,72,.35); }
+.day-summary.is-loading .day-summary-heading strong { color: var(--muted); opacity: .55; transition: opacity .15s; }
 .day-summary-heading { display: flex; align-items: baseline; gap: 9px; margin-bottom: 6px; }
 .day-summary-heading strong { font-size: 12px; }
 .day-summary-updating { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; color: var(--muted); font-size: 10px; font-weight: 700; }
@@ -470,6 +471,12 @@ button:disabled { opacity: .55; cursor: wait; }
 .summary-dialog-action.sell { color: var(--sell); background: var(--sell-soft); }
 .summary-dialog-action.short { color: #6b3ca0; background: #eee4f8; }
 .summary-dialog-action.update { color: var(--ink); background: var(--blue-soft); }
+.summary-dialog-averages { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px 14px; padding: 8px 14px; border-bottom: 1px solid var(--line); }
+.summary-dialog-averages > span { display: grid; gap: 2px; min-width: 0; }
+.summary-dialog-averages small { color: var(--muted); font-size: 8px; text-transform: uppercase; letter-spacing: .04em; }
+.summary-dialog-averages strong { font-size: 13px; }
+.summary-dialog-averages strong.positive { color: var(--green); }
+.summary-dialog-averages strong.negative { color: var(--coral); }
 .summary-dialog-toolbar { min-height: 54px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 8px 14px; border-bottom: 1px solid var(--line); background: rgba(16,37,63,.025); }
 .summary-dialog-toolbar > span { display: flex; align-items: baseline; gap: 6px; }
 .summary-dialog-toolbar > span strong { font-family: Georgia, serif; font-size: 25px; }
@@ -550,6 +557,7 @@ footer p { max-width: 690px; }
   .summary-dialog-identity h2 { font-size: 17px; }
   .summary-dialog-action { grid-column: 1 / -1; grid-row: 2; justify-self: start; padding: 6px 10px; }
   .summary-dialog-header .dialog-close { grid-column: 2; grid-row: 1; }
+  .summary-dialog-averages { grid-template-columns: 1fr; padding: 10px 15px; }
   .summary-dialog-toolbar { align-items: stretch; flex-direction: column; gap: 7px; }
   .summary-dialog-toolbar label { width: 100%; }
   .summary-dialog-list { max-height: none; padding: 8px; }

@@ -984,6 +984,24 @@ function SummaryDialog({
     const haystack = `${investor?.fullName ?? ""} ${username}`.toLocaleLowerCase("pl");
     return haystack.includes(query.trim().toLocaleLowerCase("pl"));
   });
+  const averages = useMemo(() => {
+    const matched = people.flatMap(({ username }) => {
+      const investor = investors.find((current) => current.username.toLowerCase() === username.toLowerCase());
+      return investor ? [investor] : [];
+    });
+    const average = (getValue: (investor: Investor) => number | null) => {
+      const values = matched.flatMap((investor) => {
+        const value = getValue(investor);
+        return value == null ? [] : [value];
+      });
+      return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+    };
+    return {
+      copiers: average((investor) => investor.copiers),
+      gainYtd: average((investor) => investor.gainYtd),
+      gainTwoYears: average((investor) => investor.gainTwoYears),
+    };
+  }, [people, investors]);
 
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
@@ -1014,6 +1032,11 @@ function SummaryDialog({
           <span className={`summary-dialog-action ${action.tone}`}>{action.label}</span>
           <button className="dialog-close" type="button" onClick={onClose} aria-label="Zamknij listę inwestorów">×</button>
         </header>
+        <div className="summary-dialog-averages">
+          <span><small>Śr. liczba kopiujących</small><strong>{formatNumber(averages.copiers)}</strong></span>
+          <span><small>Śr. wynik od roku</small><strong className={gainTone(averages.gainYtd)}>{formatPercent(averages.gainYtd, true)}</strong></span>
+          <span><small>Śr. wynik za 2 lata</small><strong className={gainTone(averages.gainTwoYears)}>{formatPercent(averages.gainTwoYears, true)}</strong></span>
+        </div>
         <div className="summary-dialog-toolbar">
           <span><strong>{people.length}</strong><small>{people.length === 1 ? "inwestor" : "inwestorów"}</small></span>
           <label>
@@ -1101,7 +1124,7 @@ export function Dashboard() {
   const [data, setData] = useState<DashboardPayload | null>(null);
   const [dataLoadedAt, setDataLoadedAt] = useState<string | null>(null);
   const [selectedInvestor, setSelectedInvestor] = useState("all");
-  const [investorSort, setInvestorSort] = useState<"slot" | "gain" | "risk" | "activity">("slot");
+  const [investorSort, setInvestorSort] = useState<"slot" | "gain" | "risk" | "activity">("gain");
   const [portfolioUsername, setPortfolioUsername] = useState<string | null>(null);
   const [recentTrades, setRecentTrades] = useState<TradeEvent[]>([]);
   const [livePositions, setLivePositions] = useState<CurrentPortfolioPosition[]>([]);
