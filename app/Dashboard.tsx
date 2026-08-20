@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AssetAllocationSeries, CurrentPortfolioPosition, DashboardPayload, FeedPost, GainPoint, Investor, InvestorExtendedStats, TradeEvent } from "../lib/types";
 import { consolidatePositions } from "../lib/portfolio";
-import { betterThanPct } from "../lib/format";
 import {
   formatWarsawMoment,
   isWeekendDateKey,
@@ -664,14 +663,6 @@ function ExtendedStatsSection({
           <div className="extended-stats-grid">
             <span><small>Transakcje na plusie</small><strong>{formatPercent(stats.winRatio)}</strong></span>
             <span><small>Śr. zwrot rocznie</small><strong className={gainTone(stats.annualizedReturn)}>{formatPercent(stats.annualizedReturn, true)}</strong></span>
-            <span>
-              <small>Miejsce wśród Popularnych Inwestorów{stats.rankPeriodLabel ? ` (${stats.rankPeriodLabel})` : ""}</small>
-              <strong>
-                {stats.rankPosition != null && stats.rankPoolSize != null
-                  ? `${stats.rankPosition}. z ${stats.rankPoolSize} (lepszy niż ${betterThanPct(stats.rankPosition, stats.rankPoolSize)}%)`
-                  : "Poza rankingiem PI w tym okresie"}
-              </strong>
-            </span>
             <span><small>Śr. wielkość pozycji</small><strong>{formatPercent(stats.avgPosSize)}</strong></span>
             <span>
               <small>Najczęściej handlowany</small>

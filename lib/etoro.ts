@@ -647,7 +647,20 @@ function toFeedPosts(result: PromiseSettledResult<RawFeedResponse>): FeedPost[] 
   });
 }
 
-export async function fetchInvestorExtendedStats(username: string, cid: number): Promise<InvestorExtendedStats> {
+export async function fetchInvestorExtendedStats(username: string): Promise<InvestorExtendedStats> {
+  // feeds/user takes the investor's gcid, NOT the realCID used everywhere
+  // else in this app (portfolio, tradeinfo, rankings) — verified directly:
+  // calling it with realCID always returns zero posts, even for an investor
+  // with 25,000+ copiers who clearly posts regularly; gcid returns their
+  // real feed. gcid isn't something callers of this function already have,
+  // so it's looked up fresh here.
+  const peopleLookup = await etoroRequest<{ users?: Array<{ username: string; gcid?: number }> }>(
+    `/api/v1/user-info/people?usernames=${encodeURIComponent(username)}`,
+  ).catch(() => null);
+  const gcid = peopleLookup?.users?.find(
+    (item) => item.username.toLowerCase() === username.toLowerCase(),
+  )?.gcid;
+
   const [rankingResult, monthlyResult, yearlyResult, assetsResult, userPostsResult] = await Promise.allSettled([
     etoroRequest<{
       data?: {
@@ -675,7 +688,9 @@ export async function fetchInvestorExtendedStats(username: string, cid: number):
         assets?: Array<{ instrumentId: number; symbol: string; investedPct: number }>;
       }>;
     }>(`/api/v2/portfolios/${encodeURIComponent(username)}/assets/history?period=OneMonthAgo`),
-    etoroRequest<RawFeedResponse>(`/api/v1/feeds/user/${cid}?take=5`),
+    gcid != null
+      ? etoroRequest<RawFeedResponse>(`/api/v1/feeds/user/${gcid}?take=5`)
+      : Promise.reject(new Error("gcid nieznany")),
   ]);
 
   // rankings is the primary source for almost the entire scalar grid — if it
@@ -709,54 +724,15 @@ export async function fetchInvestorExtendedStats(username: string, cid: number):
     instrumentPosts = toFeedPosts(instrumentFeedResult);
   }
 
-  // Position within the Popular Investor cohort: the list endpoint never
-  // returns a rank number directly, but it does return `pagination.totalItems`
-  // for a filtered query — so the pool size and "how many rank above this
-  // investor" are each obtained with a single pageSize=1 request (reading
-  // only the count, not the rows) instead of paging through the full list.
-  // Restricted to popularInvestor=true — the unfiltered pool is ~3.5 million
-  // accounts (mostly inactive/demo), which would make any percentile
-  // meaningless; Popular Investors (roughly 500-600) are the only cohort
-  // this comparison is actually useful against.
-  let rankPosition: number | null = null;
-  let rankPoolSize: number | null = null;
-  let rankPeriodLabel: string | null = null;
-  const resolveRank = async (period: "LastYear" | "LastTwoYears", gain: number) => {
-    const rankingsPath = `/api/v2/portfolios/rankings?period=${period}&sort=-gain&popularInvestor=true&pageSize=1`;
-    const [poolResult, aboveResult] = await Promise.allSettled([
-      etoroRequest<{ pagination?: { totalItems?: number } }>(rankingsPath),
-      etoroRequest<{ pagination?: { totalItems?: number } }>(`${rankingsPath}&gainMin=${gain + 0.0001}`),
-    ]);
-    const pool = poolResult.status === "fulfilled" ? poolResult.value.pagination?.totalItems ?? null : null;
-    const above = aboveResult.status === "fulfilled" ? aboveResult.value.pagination?.totalItems ?? null : null;
-    return pool != null && above != null ? { position: above + 1, pool } : null;
-  };
-  if (ranking?.gain != null) {
-    const lastYear = await resolveRank("LastYear", ranking.gain);
-    if (lastYear) {
-      rankPosition = lastYear.position;
-      rankPoolSize = lastYear.pool;
-      rankPeriodLabel = "rok";
-    } else {
-      // Not every tracked investor is a currently-active Popular Investor —
-      // a demoted or newly-onboarded account can fall entirely outside the
-      // LastYear PI pool. Falling back to a 2-year window gives most of
-      // those investors SOME comparison instead of a flat "not available".
-      // Needs the investor's own 2-year gain (a different number from the
-      // 1-year `ranking.gain` above) — one extra single-row lookup, only
-      // spent on this rarer fallback path.
-      const twoYearResult = await etoroRequest<{ data?: { gain?: number } }>(
-        `/api/v2/portfolios/${encodeURIComponent(username)}/rankings?period=LastTwoYears`,
-      ).catch(() => null);
-      const twoYearGain = twoYearResult?.data?.gain;
-      const lastTwoYears = twoYearGain != null ? await resolveRank("LastTwoYears", twoYearGain) : null;
-      if (lastTwoYears) {
-        rankPosition = lastTwoYears.position;
-        rankPoolSize = lastTwoYears.pool;
-        rankPeriodLabel = "2 lata";
-      }
-    }
-  }
+  // A "rank within Popular Investors" feature was attempted here using the
+  // rankings list endpoint's gainMin filter to count investors above/below
+  // a given gain (pool size + count-above via two pageSize=1 requests).
+  // Removed after verifying it was unreliable: six different tracked
+  // investors with real yearly gains ranging from +11.95% to +31.97% all
+  // came back ranked within positions 483-485 of 566 — the filter isn't
+  // actually discriminating by gain the way its own documentation implies,
+  // so the numbers it produced were confidently wrong rather than merely
+  // imprecise. Not worth re-attempting without a genuinely reliable source.
 
   // The donut only ever shows the most recent day (a portfolio-composition
   // snapshot, not a trend), so only that last day needs computing — sorted
@@ -800,9 +776,6 @@ export async function fetchInvestorExtendedStats(username: string, cid: number):
     monthlyGains: toGainPoints(monthlyResult),
     yearlyGains: toGainPoints(yearlyResult),
     assetAllocationHistory,
-    rankPosition,
-    rankPoolSize,
-    rankPeriodLabel,
     userPosts: toFeedPosts(userPostsResult),
     instrumentPosts,
   };
