@@ -77,6 +77,20 @@ test("skips a null-valued field instead of treating it as zero in the weighted a
   assert.equal(result.netProfit, 10);
 });
 
+test("recomputes priceChangePct/priceDirection from the weighted openRate instead of copying group[0]'s", () => {
+  const [result] = consolidatePositions([
+    // group[0]: opened far from the current price — if its own priceChangePct/
+    // priceDirection were kept as-is (the bug), the merged row would show a
+    // number that doesn't correspond to the weighted openRate below it.
+    position({ positionId: "a", openRate: 50, investmentPct: 10, currentRate: 100, priceChangePct: 100, priceDirection: "up" }),
+    position({ positionId: "b", openRate: 150, investmentPct: 10, currentRate: 100, priceChangePct: -33.33, priceDirection: "down" }),
+  ]);
+  // weighted openRate: (50*10 + 150*10) / 20 = 100, vs currentRate 100 → 0% change, flat
+  assert.equal(result.openRate, 100);
+  assert.equal(result.priceChangePct, 0);
+  assert.equal(result.priceDirection, "flat");
+});
+
 test("sorts the consolidated output by most recent open date first", () => {
   const result = consolidatePositions([
     position({ positionId: "a", instrumentId: 1, openTimestamp: "2026-01-01T00:00:00.000Z" }),

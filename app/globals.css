@@ -365,6 +365,9 @@ button:disabled { opacity: .55; cursor: wait; }
 .gain-bar.negative { background: var(--coral); }
 .gain-bar-label { font-size: 8px; color: var(--muted); white-space: nowrap; }
 .gain-bars-monthly .gain-bar-label { writing-mode: vertical-rl; }
+.gain-bar-value { font-size: 8px; font-weight: 750; white-space: nowrap; }
+.gain-bar-value.positive { color: var(--green); }
+.gain-bar-value.negative { color: var(--coral); }
 .extended-stats-feeds { flex: 0 0 auto; padding: 14px; border-top: 1px solid var(--line); }
 .extended-stats-feeds-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; margin-top: 10px; }
 .extended-stats-feeds-grid > div { min-width: 0; }

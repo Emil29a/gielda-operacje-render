@@ -130,8 +130,6 @@ export type InvestorExtendedStats = {
   winRatio: number | null;
   trades: number | null;
   totalTradedInstruments: number | null;
-  activeWeeksPct: number | null;
-  longPosPct: number | null;
   avgPosSize: number | null;
   annualizedReturn: number | null;
   topTradedInstrumentId: number | null;
@@ -143,6 +141,7 @@ export type InvestorExtendedStats = {
   assetAllocationHistory: AssetAllocationSeries;
   rankPosition: number | null;
   rankPoolSize: number | null;
+  rankPeriodLabel: string | null;
   userPosts: FeedPost[];
   instrumentPosts: FeedPost[];
 };

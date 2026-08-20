@@ -527,9 +527,17 @@ function GainBarChart({ points, yearOnly = false }: { points: GainPoint[]; yearO
             key={point.date}
             title={`${yearOnly ? point.date.slice(0, 4) : formatMonthLabel(point.date)}: ${formatPercent(point.gain, true)}`}
           >
-            <div className="gain-bar-track" style={{ height: trackHeight }}>
+            {yearOnly && (
+              <span className={`gain-bar-value ${point.gain >= 0 ? "positive" : "negative"}`}>
+                {formatPercent(point.gain, true)}
+              </span>
+            )}
+            <div className="gain-bar-track" style={{ height: `${trackHeight}px` }}>
               <span className="gain-bar-zero" />
-              <span className={`gain-bar ${point.gain >= 0 ? "positive" : "negative"}`} style={{ top, height: barHeight }} />
+              <span
+                className={`gain-bar ${point.gain >= 0 ? "positive" : "negative"}`}
+                style={{ top: `${top}px`, height: `${barHeight}px` }}
+              />
             </div>
             <span className="gain-bar-label">{showLabel ? point.date.slice(0, 4) : ""}</span>
           </div>
@@ -622,15 +630,13 @@ function ExtendedStatsSection({
             <span><small>Transakcje na plusie</small><strong>{formatPercent(stats.winRatio)}</strong></span>
             <span><small>Śr. zwrot rocznie</small><strong className={gainTone(stats.annualizedReturn)}>{formatPercent(stats.annualizedReturn, true)}</strong></span>
             <span>
-              <small>Miejsce wśród Popularnych Inwestorów (rok)</small>
+              <small>Miejsce wśród Popularnych Inwestorów{stats.rankPeriodLabel ? ` (${stats.rankPeriodLabel})` : ""}</small>
               <strong>
                 {stats.rankPosition != null && stats.rankPoolSize != null
                   ? `${stats.rankPosition}. z ${stats.rankPoolSize} (lepszy niż ${betterThanPct(stats.rankPosition, stats.rankPoolSize)}%)`
-                  : "—"}
+                  : "Poza rankingiem PI w tym okresie"}
               </strong>
             </span>
-            <span><small>Aktywne tygodnie</small><strong>{formatPercent(stats.activeWeeksPct)}</strong></span>
-            <span><small>Pozycje długie</small><strong>{formatPercent(stats.longPosPct)}</strong></span>
             <span><small>Śr. wielkość pozycji</small><strong>{formatPercent(stats.avgPosSize)}</strong></span>
             <span>
               <small>Najczęściej handlowany</small>
@@ -661,7 +667,7 @@ function ExtendedStatsCharts({ stats }: { stats: InvestorExtendedStats | null })
     <section className="extended-stats-charts" aria-label="Skład portfela">
       <span className="section-kicker">Skład portfela</span>
       <div className="extended-stats-charts-grid">
-        <div><small>Skład portfela wg instrumentu (ost. 30 dni)</small><AssetAllocationChart series={stats.assetAllocationHistory} /></div>
+        <div><small>Skład portfela wg instrumentu</small><AssetAllocationChart series={stats.assetAllocationHistory} /></div>
       </div>
     </section>
   );

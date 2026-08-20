@@ -655,8 +655,6 @@ export async function fetchInvestorExtendedStats(username: string, cid: number):
         winRatio?: number;
         trades?: number;
         totalTradedInstruments?: number;
-        activeWeeksPct?: number;
-        longPosPct?: number;
         avgPosSize?: number;
         annualizedReturn?: number;
         topTradedInstrumentId?: number;
@@ -722,63 +720,75 @@ export async function fetchInvestorExtendedStats(username: string, cid: number):
   // this comparison is actually useful against.
   let rankPosition: number | null = null;
   let rankPoolSize: number | null = null;
-  if (ranking?.gain != null) {
-    const rankingsPath = `/api/v2/portfolios/rankings?period=LastYear&sort=-gain&popularInvestor=true&pageSize=1`;
+  let rankPeriodLabel: string | null = null;
+  const resolveRank = async (period: "LastYear" | "LastTwoYears", gain: number) => {
+    const rankingsPath = `/api/v2/portfolios/rankings?period=${period}&sort=-gain&popularInvestor=true&pageSize=1`;
     const [poolResult, aboveResult] = await Promise.allSettled([
       etoroRequest<{ pagination?: { totalItems?: number } }>(rankingsPath),
-      etoroRequest<{ pagination?: { totalItems?: number } }>(`${rankingsPath}&gainMin=${ranking.gain + 0.0001}`),
+      etoroRequest<{ pagination?: { totalItems?: number } }>(`${rankingsPath}&gainMin=${gain + 0.0001}`),
     ]);
     const pool = poolResult.status === "fulfilled" ? poolResult.value.pagination?.totalItems ?? null : null;
     const above = aboveResult.status === "fulfilled" ? aboveResult.value.pagination?.totalItems ?? null : null;
-    if (pool != null && above != null) {
-      rankPoolSize = pool;
-      rankPosition = above + 1;
+    return pool != null && above != null ? { position: above + 1, pool } : null;
+  };
+  if (ranking?.gain != null) {
+    const lastYear = await resolveRank("LastYear", ranking.gain);
+    if (lastYear) {
+      rankPosition = lastYear.position;
+      rankPoolSize = lastYear.pool;
+      rankPeriodLabel = "rok";
+    } else {
+      // Not every tracked investor is a currently-active Popular Investor —
+      // a demoted or newly-onboarded account can fall entirely outside the
+      // LastYear PI pool. Falling back to a 2-year window gives most of
+      // those investors SOME comparison instead of a flat "not available".
+      // Needs the investor's own 2-year gain (a different number from the
+      // 1-year `ranking.gain` above) — one extra single-row lookup, only
+      // spent on this rarer fallback path.
+      const twoYearResult = await etoroRequest<{ data?: { gain?: number } }>(
+        `/api/v2/portfolios/${encodeURIComponent(username)}/rankings?period=LastTwoYears`,
+      ).catch(() => null);
+      const twoYearGain = twoYearResult?.data?.gain;
+      const lastTwoYears = twoYearGain != null ? await resolveRank("LastTwoYears", twoYearGain) : null;
+      if (lastTwoYears) {
+        rankPosition = lastTwoYears.position;
+        rankPoolSize = lastTwoYears.pool;
+        rankPeriodLabel = "2 lata";
+      }
     }
   }
 
-  // eToro's own `count` downsampling parameter on this endpoint is a
-  // documented no-op (still returns every raw day regardless of the value
-  // passed), so a ~30-50 point daily series is thinned client-side instead —
-  // plenty of daily granularity is wasted on a small inline chart anyway.
-  const MAX_CHART_POINTS = 20;
-  const downsample = <T,>(items: T[], maxPoints: number): T[] => {
-    if (items.length <= maxPoints) return items;
-    const step = (items.length - 1) / (maxPoints - 1);
-    return Array.from({ length: maxPoints }, (_, index) => items[Math.round(index * step)]);
-  };
-
+  // The donut only ever shows the most recent day (a portfolio-composition
+  // snapshot, not a trend), so only that last day needs computing — sorted
+  // by actual size today (not summed over the whole month, which previously
+  // let a since-sold position outrank what's actually held now), biggest
+  // first. "Inne" stays last as the conventional catch-all regardless of
+  // its own size.
   let assetAllocationHistory: AssetAllocationSeries = { labels: [], points: [] };
   if (assetsResult.status === "fulfilled") {
-    const rawDays = downsample(assetsResult.value.results ?? [], MAX_CHART_POINTS);
-    const totalsBySymbol = new Map<string, number>();
-    for (const day of rawDays) {
-      for (const asset of day.assets ?? []) {
-        if (!asset.symbol) continue;
-        totalsBySymbol.set(asset.symbol, (totalsBySymbol.get(asset.symbol) ?? 0) + asset.investedPct);
-      }
+    const rawDays = assetsResult.value.results ?? [];
+    const lastDay = rawDays[rawDays.length - 1];
+    if (lastDay) {
+      const assets = (lastDay.assets ?? []).filter((asset) => asset.symbol);
+      const topAssets = [...assets].sort((a, b) => b.investedPct - a.investedPct).slice(0, 8);
+      const topSum = topAssets.reduce((sum, asset) => sum + asset.investedPct, 0);
+      const allSum = assets.reduce((sum, asset) => sum + asset.investedPct, 0);
+      const otherPct = Math.max(0, allSum - topSum);
+      const entries = [
+        { label: "Gotówka", value: lastDay.cashPct },
+        ...topAssets.map((asset) => ({ label: asset.symbol, value: asset.investedPct })),
+      ].sort((a, b) => b.value - a.value);
+      assetAllocationHistory = {
+        labels: [...entries.map((entry) => entry.label), "Inne"],
+        points: [{ date: lastDay.date, values: [...entries.map((entry) => entry.value * 100), otherPct * 100] }],
+      };
     }
-    const topSymbols = [...totalsBySymbol.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 8)
-      .map(([symbol]) => symbol);
-    const labels = ["Gotówka", ...topSymbols, "Inne"];
-    const points = rawDays.map((day) => {
-      const bySymbol = new Map((day.assets ?? []).filter((a) => a.symbol).map((a) => [a.symbol, a.investedPct]));
-      const topValues = topSymbols.map((symbol) => (bySymbol.get(symbol) ?? 0) * 100);
-      const topSum = topSymbols.reduce((sum, symbol) => sum + (bySymbol.get(symbol) ?? 0), 0);
-      const allInvested = (day.assets ?? []).reduce((sum, asset) => sum + asset.investedPct, 0);
-      const other = Math.max(0, allInvested - topSum) * 100;
-      return { date: day.date, values: [day.cashPct * 100, ...topValues, other] };
-    });
-    assetAllocationHistory = { labels, points };
   }
 
   return {
     winRatio: ranking?.winRatio ?? null,
     trades: ranking?.trades ?? null,
     totalTradedInstruments: ranking?.totalTradedInstruments ?? null,
-    activeWeeksPct: ranking?.activeWeeksPct ?? null,
-    longPosPct: ranking?.longPosPct ?? null,
     avgPosSize: ranking?.avgPosSize ?? null,
     annualizedReturn: ranking?.annualizedReturn != null ? ranking.annualizedReturn * 100 : null,
     topTradedInstrumentId: ranking?.topTradedInstrumentId ?? null,
@@ -792,6 +802,7 @@ export async function fetchInvestorExtendedStats(username: string, cid: number):
     assetAllocationHistory,
     rankPosition,
     rankPoolSize,
+    rankPeriodLabel,
     userPosts: toFeedPosts(userPostsResult),
     instrumentPosts,
   };
