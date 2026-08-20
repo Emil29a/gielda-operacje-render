@@ -80,6 +80,11 @@ function formatQuickDate(value: string) {
   return `${day}.${month}.${year}`;
 }
 
+function formatShortDate(value: string) {
+  const [, month, day] = value.split("-");
+  return `${day}.${month}`;
+}
+
 function formatDateOnly(value: string | null) {
   if (!value) return "—";
   return new Intl.DateTimeFormat("pl-PL", {
@@ -779,6 +784,368 @@ function FeedList({ posts, emptyLabel }: { posts: FeedPost[]; emptyLabel: string
         </article>
       ))}
     </div>
+  );
+}
+
+type RecentActivityPerson = {
+  username: string;
+  dates: string[];
+  alsoOppositeDates: string[];
+  roundTripReturnPct: number | null;
+  openReturnPct: number | null;
+  closeReturnPct: number | null;
+  fullyExited: boolean | null;
+};
+
+type RecentActivityGroup = {
+  key: string;
+  instrumentId: number;
+  symbol: string;
+  displayName: string;
+  logoUrl: string | null;
+  action: "buy" | "sell";
+  people: RecentActivityPerson[];
+};
+
+type RecentActivityPayload = {
+  startDate: string;
+  endDate: string;
+  groups: RecentActivityGroup[];
+};
+
+function dayWord(count: number) {
+  return count === 1 ? "dzień" : "dni";
+}
+
+function RecentActivityDialog({
+  group,
+  range,
+  investors,
+  titleId,
+  onClose,
+  onOpenInvestor,
+}: {
+  group: RecentActivityGroup;
+  range: { startDate: string; endDate: string };
+  investors: Investor[];
+  titleId: string;
+  onClose: () => void;
+  onOpenInvestor: (username: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const tone = group.action === "buy" ? "buy" : "sell";
+  const actionLabel = group.action === "buy" ? "Kupno" : "Sprzedaż";
+  const visiblePeople = group.people.filter(({ username }) => {
+    const investor = investors.find((current) => current.username.toLowerCase() === username.toLowerCase());
+    const haystack = `${investor?.fullName ?? ""} ${username}`.toLocaleLowerCase("pl");
+    return haystack.includes(query.trim().toLocaleLowerCase("pl"));
+  });
+  const averages = useMemo(() => {
+    const matched = group.people.flatMap(({ username }) => {
+      const investor = investors.find((current) => current.username.toLowerCase() === username.toLowerCase());
+      return investor ? [investor] : [];
+    });
+    const average = (getValue: (investor: Investor) => number | null) => {
+      const values = matched.flatMap((investor) => {
+        const value = getValue(investor);
+        return value == null ? [] : [value];
+      });
+      return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+    };
+    return {
+      copiers: average((investor) => investor.copiers),
+      gainYtd: average((investor) => investor.gainYtd),
+      gainTwoYears: average((investor) => investor.gainTwoYears),
+    };
+  }, [group.people, investors]);
+
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    document.body.classList.add("modal-open");
+    return () => {
+      document.removeEventListener("keydown", closeOnEscape);
+      document.body.classList.remove("modal-open");
+    };
+  }, [onClose]);
+
+  return (
+    // The backdrop is intentionally mouse-only; the dialog has a native close button and Escape support.
+    // eslint-disable-next-line jsx-a11y/no-static-element-interactions
+    <div className="portfolio-backdrop summary-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <section className={`portfolio-dialog summary-dialog recent-activity-dialog ${tone}`} role="dialog" aria-modal="true" aria-labelledby={titleId}>
+        <header className="portfolio-dialog-header summary-dialog-header">
+          <div className="summary-dialog-identity">
+            <InstrumentLogo logoUrl={group.logoUrl} symbol={group.symbol} />
+            <div>
+              <span className="section-kicker">{formatQuickDate(range.startDate)} – {formatQuickDate(range.endDate)}</span>
+              <h2 id={titleId}>{group.symbol} · {group.displayName}</h2>
+              <p>{group.people.length} {group.people.length === 1 ? "inwestor" : "inwestorów"}</p>
+            </div>
+          </div>
+          <span className={`summary-dialog-action ${tone}`}>{actionLabel}</span>
+          <button className="dialog-close" type="button" onClick={onClose} aria-label="Zamknij listę inwestorów">×</button>
+        </header>
+        <div className="summary-dialog-toolbar">
+          <span><strong>{group.people.length}</strong><small>{group.people.length === 1 ? "inwestor" : "inwestorów"}</small></span>
+          <label>
+            <span className="sr-only">Szukaj inwestora</span>
+            <input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Szukaj inwestora…" />
+          </label>
+        </div>
+        <div className="summary-dialog-averages">
+          <span><small>Śr. liczba kopiujących</small><strong>{formatNumber(averages.copiers)}</strong></span>
+          <span><small>Śr. wynik od roku</small><strong className={gainTone(averages.gainYtd)}>{formatPercent(averages.gainYtd, true)}</strong></span>
+          <span><small>Śr. wynik za 2 lata</small><strong className={gainTone(averages.gainTwoYears)}>{formatPercent(averages.gainTwoYears, true)}</strong></span>
+        </div>
+        <div className="summary-dialog-list">
+          {visiblePeople.map(({ username, dates, alsoOppositeDates, roundTripReturnPct, openReturnPct, closeReturnPct, fullyExited }) => {
+            const investor = investors.find(
+              (current) => current.username.toLowerCase() === username.toLowerCase(),
+            );
+            const oppositeLabel = group.action === "buy" ? "sprzedał" : "kupił ponownie";
+            return (
+              <button
+                type="button"
+                className="summary-dialog-person"
+                key={username}
+                onClick={() => onOpenInvestor(investor?.username ?? username)}
+              >
+                <span className={`avatar summary-dialog-avatar avatar-${investor?.slot ?? 1}`}>
+                  {investor?.avatarUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={investor.avatarUrl} alt="" />
+                  ) : <span aria-hidden="true">{initials(username)}</span>}
+                </span>
+                <span className="summary-dialog-person-name">
+                  <strong>{investor?.fullName ?? username}</strong>
+                  <small>@{username}</small>
+                  {alsoOppositeDates.length > 0 && (
+                    <small className="summary-dialog-flip-note">
+                      W tym okresie też: {oppositeLabel} · {alsoOppositeDates.map((date) => formatShortDate(date)).join(", ")}
+                    </small>
+                  )}
+                  {group.action === "sell" && fullyExited != null && (
+                    <small className={`recent-activity-exit-note ${fullyExited ? "full" : "partial"}`}>
+                      {fullyExited ? "Zamknął całą pozycję" : "Nadal posiada część pozycji"}
+                    </small>
+                  )}
+                </span>
+                <span className="summary-dialog-operation recent-activity-operation">
+                  <small>{dates.length} {dayWord(dates.length)}</small>
+                  <span className="recent-activity-dates">
+                    {dates.map((date) => <span className="recent-activity-date-chip" key={date}>{formatShortDate(date)}</span>)}
+                  </span>
+                  {roundTripReturnPct != null && (
+                    <span className={`recent-activity-return-badge ${gainTone(roundTripReturnPct)}`}>
+                      Krótkoterminowa transakcja: {formatPercent(roundTripReturnPct, true)}
+                    </span>
+                  )}
+                  {group.action === "buy" && openReturnPct != null && (
+                    <span className={`recent-activity-return-badge ${gainTone(openReturnPct)}`}>
+                      Zwrot do dziś: {formatPercent(openReturnPct, true)}
+                    </span>
+                  )}
+                  {group.action === "sell" && closeReturnPct != null && (
+                    <span className={`recent-activity-return-badge ${gainTone(closeReturnPct)}`}>
+                      Zwrot przy sprzedaży: {formatPercent(closeReturnPct, true)}
+                    </span>
+                  )}
+                </span>
+                <span className="summary-dialog-copiers">
+                  <small>Kopiujących</small>
+                  <b>{formatNumber(investor?.copiers)}</b>
+                </span>
+                <span className="summary-dialog-return">
+                  <small>Od roku</small>
+                  <b className={gainTone(investor?.gainYtd)}>{formatPercent(investor?.gainYtd, true)}</b>
+                </span>
+                <span className="summary-dialog-return">
+                  <small>2 lata</small>
+                  <b className={gainTone(investor?.gainTwoYears)}>{formatPercent(investor?.gainTwoYears, true)}</b>
+                </span>
+                <span className="summary-dialog-return">
+                  <small>Miejsce wśród PI</small>
+                  <b>
+                    {investor?.rankPosition != null && investor?.rankPoolSize != null
+                      ? `${investor.rankPosition}. z ${investor.rankPoolSize}`
+                      : "—"}
+                  </b>
+                </span>
+                <span className="summary-dialog-open" aria-hidden="true">›</span>
+              </button>
+            );
+          })}
+          {!visiblePeople.length && <div className="summary-dialog-empty">Nie znaleziono inwestora.</div>}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function RecentActivitySection({
+  ready,
+  days,
+  title,
+  investors,
+  filterQuery,
+  onOpenInvestor,
+}: {
+  ready: boolean;
+  days: 5 | 14 | 30;
+  title: string;
+  investors: Investor[];
+  filterQuery: string;
+  onOpenInvestor: (username: string) => void;
+}) {
+  const [data, setData] = useState<RecentActivityPayload | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const stripRef = useRef<HTMLDivElement | null>(null);
+  const headingId = `recent-activity-title-${days}`;
+
+  useEffect(() => {
+    // Waits for the main dashboard payload to finish loading (and its own
+    // sync tick to run) before fetching — otherwise this panel can render
+    // from trade_events as they stood *before* that sync tick, appearing
+    // more current than it actually is next to still-loading data above it.
+    if (!ready) return;
+    let cancelled = false;
+    api<RecentActivityPayload>(`/api/recent-activity?days=${days}`)
+      .then((payload) => { if (!cancelled) setData(payload); })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [ready, days]);
+
+  const visibleGroups = useMemo(() => {
+    const groups = data?.groups ?? [];
+    const query = filterQuery.trim().toLocaleLowerCase("pl");
+    if (!query) return groups;
+    return groups.filter((group) =>
+      group.symbol.toLocaleLowerCase("pl").includes(query) ||
+      group.displayName.toLocaleLowerCase("pl").includes(query));
+  }, [data?.groups, filterQuery]);
+
+  const scroll = useScrollAvailability(stripRef, visibleGroups.length);
+
+  const scrollThisStrip = (direction: -1 | 1) => {
+    const container = stripRef.current;
+    if (!container) return;
+    const positions = [...container.children].map(
+      (item) => (item as HTMLElement).offsetLeft - container.offsetLeft,
+    );
+    const current = container.scrollLeft;
+    const target = direction > 0
+      ? positions.find((position) => position > current + 2) ?? positions.at(-1) ?? current
+      : [...positions].reverse().find((position) => position < current - 2) ?? 0;
+    container.scrollTo({ left: target, behavior: "smooth" });
+  };
+
+  const selectedGroup = data?.groups.find((group) => group.key === selectedKey) ?? null;
+
+  // A fetch failure on this quiet, supplementary panel doesn't surface an
+  // alert — it's secondary to the journal above it — but loading itself is
+  // shown explicitly now (rather than rendering nothing), so the panel
+  // doesn't look like it isn't coming at all right before it pops in.
+  if (!ready || loading) {
+    return (
+      <section className="day-summary recent-activity-summary" aria-busy="true">
+        <div className="day-summary-heading">
+          <span className="section-kicker">{title}</span>
+        </div>
+        <div className="recent-activity-loading" role="status" aria-live="polite">
+          <span className="loading-spinner small" aria-hidden="true" />
+          Wczytuję ostatnie transakcje…
+        </div>
+      </section>
+    );
+  }
+  if (!data || !data.groups.length) return null;
+
+  return (
+    <>
+      <section className="day-summary recent-activity-summary" aria-labelledby={headingId}>
+        <div className="day-summary-heading">
+          <span className="section-kicker">{title}</span>
+          <strong id={headingId}>
+            {formatQuickDate(data.startDate)} – {formatQuickDate(data.endDate)}
+          </strong>
+        </div>
+        {visibleGroups.length ? (
+          <div className="scroll-strip-shell company-strip">
+            <button className={`strip-arrow ${scroll.left ? "" : "is-hidden"}`} type="button" onClick={() => scrollThisStrip(-1)} disabled={!scroll.left} aria-label="Pokaż wcześniejsze spółki">‹</button>
+            <div className="day-summary-list" ref={stripRef}>
+              {visibleGroups.map((group) => (
+                <button
+                  type="button"
+                  className={`summary-card ${group.action === "buy" ? "buy" : "sell"} ${selectedKey === group.key ? "active" : ""}`}
+                  key={group.key}
+                  onClick={() => setSelectedKey((current) => current === group.key ? null : group.key)}
+                  aria-expanded={selectedKey === group.key}
+                >
+                  <InstrumentLogo logoUrl={group.logoUrl} symbol={group.symbol} />
+                  <span className="summary-company"><strong>{group.symbol}</strong><small>{group.displayName}</small></span>
+                  <span className="summary-investors"><strong>{group.people.length}</strong><small>{group.people.length === 1 ? "inwestor" : "inwestorów"}</small></span>
+                  <span className="summary-footer">
+                    <b className={`summary-action ${group.action === "buy" ? "buy" : "sell"}`}>{group.action === "buy" ? "Kupno" : "Sprzedaż"}</b>
+                  </span>
+                </button>
+              ))}
+            </div>
+            <button className={`strip-arrow ${scroll.right ? "" : "is-hidden"}`} type="button" onClick={() => scrollThisStrip(1)} disabled={!scroll.right} aria-label="Pokaż kolejne spółki">›</button>
+          </div>
+        ) : (
+          <div className="recent-activity-empty">Brak spółek pasujących do „{filterQuery.trim()}” w tym okresie.</div>
+        )}
+      </section>
+      {selectedGroup && (
+        <RecentActivityDialog
+          group={selectedGroup}
+          range={{ startDate: data.startDate, endDate: data.endDate }}
+          investors={investors}
+          titleId={`${headingId}-dialog`}
+          onClose={() => setSelectedKey(null)}
+          onOpenInvestor={(username) => {
+            setSelectedKey(null);
+            onOpenInvestor(username);
+          }}
+        />
+      )}
+    </>
+  );
+}
+
+function RecentActivityPanels({
+  ready,
+  investors,
+  onOpenInvestor,
+}: {
+  ready: boolean;
+  investors: Investor[];
+  onOpenInvestor: (username: string) => void;
+}) {
+  const [filterQuery, setFilterQuery] = useState("");
+  return (
+    <>
+      <div className="recent-activity-search">
+        <label>
+          <span className="sr-only">Szukaj spółki w ostatnich sesjach</span>
+          <input
+            type="search"
+            value={filterQuery}
+            onChange={(event) => setFilterQuery(event.target.value)}
+            placeholder="Szukaj spółki w ostatnich sesjach…"
+            aria-label="Szukaj spółki w ostatnich sesjach"
+          />
+        </label>
+      </div>
+      <RecentActivitySection ready={ready} days={5} title="Ostatnie 5 dni sesyjnych" investors={investors} filterQuery={filterQuery} onOpenInvestor={onOpenInvestor} />
+      <RecentActivitySection ready={ready} days={14} title="Ostatnie 14 dni sesyjnych" investors={investors} filterQuery={filterQuery} onOpenInvestor={onOpenInvestor} />
+      <RecentActivitySection ready={ready} days={30} title="Ostatnie 30 dni sesyjnych" investors={investors} filterQuery={filterQuery} onOpenInvestor={onOpenInvestor} />
+    </>
   );
 }
 
@@ -1777,6 +2144,12 @@ export function Dashboard() {
           <button className={`strip-arrow ${investorScroll.right ? "" : "is-hidden"}`} type="button" onClick={() => scrollStrip(investorStripRef, 1)} disabled={!investorScroll.right} aria-label="Pokaż kolejnych inwestorów">›</button>
         </div>
       </section>
+
+      <RecentActivityPanels
+        ready={Boolean(data)}
+        investors={data?.investors ?? []}
+        onOpenInvestor={(username) => setPortfolioUsername(username)}
+      />
 
       <CompanyDiscussionSection />
 

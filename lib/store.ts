@@ -504,11 +504,8 @@ export async function syncPositionsForInvestors(
   }
 }
 
-export async function listEvents(): Promise<TradeEvent[]> {
-  const result = await getD1()
-    .prepare("SELECT * FROM trade_events ORDER BY occurred_at DESC, id DESC LIMIT 1000")
-    .all<Record<string, unknown>>();
-  return result.results.map((row) => ({
+function toTradeEvent(row: Record<string, unknown>): TradeEvent {
+  return {
     id: Number(row.id),
     username: String(row.username),
     eventType: String(row.event_type) as TradeEvent["eventType"],
@@ -534,7 +531,26 @@ export async function listEvents(): Promise<TradeEvent[]> {
     priceDirection: "unknown",
     quoteStatus: "unavailable",
     rateKind: "current",
-  }));
+  };
+}
+
+export async function listEvents(): Promise<TradeEvent[]> {
+  const result = await getD1()
+    .prepare("SELECT * FROM trade_events ORDER BY occurred_at DESC, id DESC LIMIT 1000")
+    .all<Record<string, unknown>>();
+  return result.results.map(toTradeEvent);
+}
+
+// Unlike listEvents (capped at 1000 for the single-day journal view), this
+// pulls every event since a given timestamp uncapped — used for the
+// recent-activity summary, which aggregates across several days and would
+// silently under-count buyers/sellers for busy instruments if truncated.
+export async function listEventsSince(sinceIso: string): Promise<TradeEvent[]> {
+  const result = await getD1()
+    .prepare("SELECT * FROM trade_events WHERE occurred_at >= ? ORDER BY occurred_at DESC, id DESC")
+    .bind(sinceIso)
+    .all<Record<string, unknown>>();
+  return result.results.map(toTradeEvent);
 }
 
 export async function listCurrentPositions(): Promise<StoredPosition[]> {

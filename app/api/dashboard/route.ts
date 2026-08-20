@@ -271,9 +271,22 @@ export async function GET(request: Request) {
       const quoteStatus = valuationRate == null || !valuationTime
         ? "unavailable" as const
         : warsawDateKey(valuationTime) === today ? "today" as const : "previous" as const;
+      // Self-heals a symbol/displayName/exchange that got permanently baked
+      // in as a "#id"/"Instrument id" placeholder at sync time (fetchInstruments
+      // failing transiently — a rate-limit cooldown active at that exact
+      // moment, a slow upstream, etc.): historyInstruments is freshly
+      // re-fetched on every dashboard request for every instrumentId in
+      // play, so a name that resolves now overrides whatever got stored,
+      // without needing to touch the stored row at all. Falls back to the
+      // stored value only when this fetch also couldn't resolve it.
+      const freshInstrument = historyInstruments.get(item.instrumentId);
       return {
         ...item,
-        logoUrl: historyInstruments.get(item.instrumentId)?.logoUrl ?? event.logoUrl ?? null,
+        symbol: freshInstrument?.symbol ?? event.symbol,
+        displayName: freshInstrument?.displayName ?? event.displayName,
+        exchangeId: freshInstrument?.exchangeId ?? event.exchangeId ?? null,
+        exchangeName: freshInstrument?.exchangeName ?? event.exchangeName ?? null,
+        logoUrl: freshInstrument?.logoUrl ?? event.logoUrl ?? null,
         currentRate: valuationRate,
         currentRateAt: valuationTime,
         quoteStatus,
