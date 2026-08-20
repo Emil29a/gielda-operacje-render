@@ -486,6 +486,10 @@ function InvestorCard({
         <span><small>Otwarte</small><strong>{investor.openPositions ?? 0}</strong></span>
         <span><small>Liczba kopiujących</small><strong>{formatNumber(investor.copiers)}</strong></span>
         <span><small>Aktywny od</small><strong>{formatDateOnly(investor.activeSince)}</strong></span>
+        <span>
+          <small>Miejsce wśród PI</small>
+          <strong>{investor.rankPosition != null && investor.rankPoolSize != null ? `${investor.rankPosition}. z ${investor.rankPoolSize}` : "—"}</strong>
+        </span>
       </div>
       <div className="investor-actions">
         <button type="button" onClick={onOpenPortfolio}>Zobacz portfel</button>
@@ -1032,17 +1036,17 @@ function SummaryDialog({
           <span className={`summary-dialog-action ${action.tone}`}>{action.label}</span>
           <button className="dialog-close" type="button" onClick={onClose} aria-label="Zamknij listę inwestorów">×</button>
         </header>
-        <div className="summary-dialog-averages">
-          <span><small>Śr. liczba kopiujących</small><strong>{formatNumber(averages.copiers)}</strong></span>
-          <span><small>Śr. wynik od roku</small><strong className={gainTone(averages.gainYtd)}>{formatPercent(averages.gainYtd, true)}</strong></span>
-          <span><small>Śr. wynik za 2 lata</small><strong className={gainTone(averages.gainTwoYears)}>{formatPercent(averages.gainTwoYears, true)}</strong></span>
-        </div>
         <div className="summary-dialog-toolbar">
           <span><strong>{people.length}</strong><small>{people.length === 1 ? "inwestor" : "inwestorów"}</small></span>
           <label>
             <span className="sr-only">Szukaj inwestora</span>
             <input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Szukaj inwestora…" />
           </label>
+        </div>
+        <div className="summary-dialog-averages">
+          <span><small>Śr. liczba kopiujących</small><strong>{formatNumber(averages.copiers)}</strong></span>
+          <span><small>Śr. wynik od roku</small><strong className={gainTone(averages.gainYtd)}>{formatPercent(averages.gainYtd, true)}</strong></span>
+          <span><small>Śr. wynik za 2 lata</small><strong className={gainTone(averages.gainTwoYears)}>{formatPercent(averages.gainTwoYears, true)}</strong></span>
         </div>
         <div className="summary-dialog-list">
           {visiblePeople.map(({ username, events }) => {

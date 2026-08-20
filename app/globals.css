@@ -179,7 +179,7 @@ button:disabled { opacity: .55; cursor: wait; }
 .filter-row button.active .filter-investor-name strong, .filter-row button.active .filter-investor-gains b { color: #fff; }
 .day-summary { margin: 0 0 9px; padding: 8px 9px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.28); }
 .day-summary.is-loading { border-color: rgba(31,95,72,.35); }
-.day-summary.is-loading .day-summary-heading strong { color: var(--muted); opacity: .55; transition: opacity .15s; }
+.day-summary.is-loading .day-summary-heading strong { color: var(--line); opacity: .3; filter: blur(.4px); transition: opacity .15s; }
 .day-summary-heading { display: flex; align-items: baseline; gap: 9px; margin-bottom: 6px; }
 .day-summary-heading strong { font-size: 12px; }
 .day-summary-updating { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; color: var(--muted); font-size: 10px; font-weight: 700; }
