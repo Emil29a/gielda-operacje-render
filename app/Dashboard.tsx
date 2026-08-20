@@ -501,37 +501,21 @@ function InvestorCard({
   );
 }
 
-function formatMonthLabel(date: string) {
-  const [year, month] = date.split("-");
-  const names = ["sty", "lut", "mar", "kwi", "maj", "cze", "lip", "sie", "wrz", "paź", "lis", "gru"];
-  return `${names[Number(month) - 1]} ${year.slice(2)}`;
-}
-
-function GainBarChart({ points, yearOnly = false }: { points: GainPoint[]; yearOnly?: boolean }) {
+function YearlyGainChart({ points }: { points: GainPoint[] }) {
   if (!points.length) return <span className="chart-empty">brak danych</span>;
   const maxAbs = Math.max(...points.map((point) => Math.abs(point.gain)), 1);
-  const trackHeight = 64;
+  const trackHeight = 90;
   const half = trackHeight / 2;
   return (
-    <div className={`gain-bars ${yearOnly ? "gain-bars-yearly" : "gain-bars-monthly"}`}>
-      {points.map((point, index) => {
-        const barHeight = Math.max(1.5, (Math.abs(point.gain) / maxAbs) * half);
+    <div className="gain-bars gain-bars-yearly">
+      {points.map((point) => {
+        const barHeight = Math.max(2, (Math.abs(point.gain) / maxAbs) * half);
         const top = point.gain >= 0 ? half - barHeight : half;
-        // 74 months of individually-labeled bars is unreadable — only January
-        // (and the very first bar) gets a printed year, everything else
-        // relies on the hover tooltip for its exact month/value.
-        const showLabel = yearOnly || index === 0 || point.date.slice(5, 7) === "01";
         return (
-          <div
-            className="gain-bar-col"
-            key={point.date}
-            title={`${yearOnly ? point.date.slice(0, 4) : formatMonthLabel(point.date)}: ${formatPercent(point.gain, true)}`}
-          >
-            {yearOnly && (
-              <span className={`gain-bar-value ${point.gain >= 0 ? "positive" : "negative"}`}>
-                {formatPercent(point.gain, true)}
-              </span>
-            )}
+          <div className="gain-bar-col" key={point.date}>
+            <span className={`gain-bar-value ${point.gain >= 0 ? "positive" : "negative"}`}>
+              {formatPercent(point.gain, true)}
+            </span>
             <div className="gain-bar-track" style={{ height: `${trackHeight}px` }}>
               <span className="gain-bar-zero" />
               <span
@@ -539,10 +523,61 @@ function GainBarChart({ points, yearOnly = false }: { points: GainPoint[]; yearO
                 style={{ top: `${top}px`, height: `${barHeight}px` }}
               />
             </div>
-            <span className="gain-bar-label">{showLabel ? point.date.slice(0, 4) : ""}</span>
+            <span className="gain-bar-label">{point.date.slice(0, 4)}</span>
           </div>
         );
       })}
+    </div>
+  );
+}
+
+const MONTH_HEADS = ["Sty", "Lut", "Mar", "Kwi", "Maj", "Cze", "Lip", "Sie", "Wrz", "Paź", "Lis", "Gru"];
+
+// A year-per-row × month-per-column grid instead of 74 individually labeled
+// bars in a strip — the strip made every label collide or disappear
+// (duplicated years, near-invisible 8px slivers). Each cell's fill opacity
+// scales with |gain| relative to the biggest month on record, so strong
+// months visually pop without needing to read every number; the exact
+// figure is still one hover away, and shown as text directly wherever the
+// cell is wide enough to hold it.
+function MonthlyGainHeatmap({ points }: { points: GainPoint[] }) {
+  if (!points.length) return <span className="chart-empty">brak danych</span>;
+  const maxAbs = Math.max(...points.map((point) => Math.abs(point.gain)), 1);
+  const byYear = new Map<string, Map<number, number>>();
+  for (const point of points) {
+    const year = point.date.slice(0, 4);
+    const month = Number(point.date.slice(5, 7));
+    if (!byYear.has(year)) byYear.set(year, new Map());
+    byYear.get(year)!.set(month, point.gain);
+  }
+  const years = [...byYear.keys()].sort((a, b) => Number(b) - Number(a));
+  return (
+    <div className="gain-heatmap">
+      <div className="gain-heatmap-row gain-heatmap-head">
+        <span className="gain-heatmap-year" aria-hidden="true" />
+        {MONTH_HEADS.map((label) => <span key={label} className="gain-heatmap-cell-label">{label}</span>)}
+      </div>
+      {years.map((year) => (
+        <div className="gain-heatmap-row" key={year}>
+          <span className="gain-heatmap-year">{year}</span>
+          {MONTH_HEADS.map((_, index) => {
+            const gain = byYear.get(year)?.get(index + 1);
+            if (gain == null) return <span className="gain-heatmap-cell empty" key={index} />;
+            const intensity = 0.16 + Math.min(1, Math.abs(gain) / maxAbs) * 0.72;
+            const tint = gain >= 0 ? `rgba(11,122,90,${intensity})` : `rgba(201,95,66,${intensity})`;
+            return (
+              <span
+                key={index}
+                className={`gain-heatmap-cell ${intensity > 0.55 ? "on-dark" : ""}`}
+                style={{ background: tint }}
+                title={`${MONTH_HEADS[index]} ${year}: ${formatPercent(gain, true)}`}
+              >
+                {formatPercent(gain, true)}
+              </span>
+            );
+          })}
+        </div>
+      ))}
     </div>
   );
 }
@@ -652,8 +687,8 @@ function ExtendedStatsSection({
             dla śledzonych, aktywnie kopiowanych inwestorów — ranking porównuje tylko do tej grupy, nie do wszystkich użytkowników eToro.
           </p>
           <div className="extended-stats-gains">
-            <span><small>Wynik roczny</small><GainBarChart points={stats.yearlyGains} yearOnly /></span>
-            <span><small>Wynik miesięczny (cała historia, najedź na słupek po szczegóły)</small><GainBarChart points={stats.monthlyGains} /></span>
+            <span><small>Wynik roczny</small><YearlyGainChart points={stats.yearlyGains} /></span>
+            <span><small>Wynik miesięczny (cała historia)</small><MonthlyGainHeatmap points={stats.monthlyGains} /></span>
           </div>
         </>
       )}

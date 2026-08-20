@@ -353,21 +353,26 @@ button:disabled { opacity: .55; cursor: wait; }
 .chart-legend > span { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 10px; }
 .chart-legend b { color: var(--ink); font-weight: 700; }
 .chart-legend i { width: 9px; height: 9px; border-radius: 2px; flex: 0 0 auto; }
-.gain-bars { display: flex; align-items: flex-end; gap: 3px; overflow-x: auto; padding-bottom: 4px; }
-.gain-bars-yearly .gain-bar-col { flex: 0 0 32px; }
-.gain-bars-monthly .gain-bar-col { flex: 0 0 8px; }
-.gain-bar-col { display: flex; flex-direction: column; align-items: center; gap: 4px; cursor: default; }
+.gain-bars { display: flex; align-items: flex-end; gap: 10px; overflow-x: auto; padding-bottom: 4px; }
+.gain-bars-yearly .gain-bar-col { flex: 0 0 46px; }
+.gain-bar-col { display: flex; flex-direction: column; align-items: center; gap: 5px; cursor: default; }
 .gain-bar-track { position: relative; width: 100%; }
 .gain-bar-zero { position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: var(--line); }
-.gain-bar { position: absolute; left: 20%; right: 20%; min-height: 1.5px; border-radius: 1px; }
-.gain-bars-yearly .gain-bar { left: 15%; right: 15%; }
+.gain-bar { position: absolute; left: 15%; right: 15%; min-height: 2px; border-radius: 2px; }
 .gain-bar.positive { background: var(--green); }
 .gain-bar.negative { background: var(--coral); }
-.gain-bar-label { font-size: 8px; color: var(--muted); white-space: nowrap; }
-.gain-bars-monthly .gain-bar-label { writing-mode: vertical-rl; }
-.gain-bar-value { font-size: 8px; font-weight: 750; white-space: nowrap; }
+.gain-bar-label { font-size: 10px; color: var(--muted); font-weight: 600; white-space: nowrap; }
+.gain-bar-value { font-size: 10px; font-weight: 750; white-space: nowrap; }
 .gain-bar-value.positive { color: var(--green); }
 .gain-bar-value.negative { color: var(--coral); }
+.gain-heatmap { display: grid; gap: 3px; overflow-x: auto; padding-bottom: 4px; }
+.gain-heatmap-row { display: grid; grid-template-columns: 40px repeat(12, 1fr); gap: 3px; align-items: center; }
+.gain-heatmap-head { margin-bottom: 2px; }
+.gain-heatmap-year { font-size: 10px; font-weight: 700; color: var(--ink); white-space: nowrap; }
+.gain-heatmap-cell-label { text-align: center; font-size: 8px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+.gain-heatmap-cell { display: grid; place-items: center; min-width: 34px; height: 24px; border-radius: 4px; font-size: 8px; font-weight: 700; color: var(--ink); white-space: nowrap; }
+.gain-heatmap-cell.on-dark { color: #fff; }
+.gain-heatmap-cell.empty { background: rgba(16,37,63,.03); }
 .extended-stats-feeds { flex: 0 0 auto; padding: 14px; border-top: 1px solid var(--line); }
 .extended-stats-feeds-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; margin-top: 10px; }
 .extended-stats-feeds-grid > div { min-width: 0; }
@@ -562,7 +567,6 @@ footer p { max-width: 690px; }
   .portfolio-summary strong { font-size: 14px; }
   .extended-stats { padding: 10px 15px; }
   .extended-stats-grid { grid-template-columns: repeat(2, 1fr); }
-  .extended-stats-gains > span { grid-template-columns: 1fr; gap: 2px; }
   .extended-stats-charts { padding: 12px 15px; }
   .extended-stats-charts-grid { grid-template-columns: 1fr; }
   .donut-row { flex-direction: column; align-items: flex-start; }
