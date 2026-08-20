@@ -59,8 +59,21 @@ button:disabled { opacity: .55; cursor: wait; }
 .alert.notice span { width: 20px; height: 20px; flex: 0 0 auto; display: grid; place-items: center; border: 1px solid var(--muted); border-radius: 50%; font-family: Georgia, serif; font-weight: 700; }
 .alert.error { color: #7d2e23; background: var(--coral-soft); border: 1px solid rgba(201,95,66,.22); }
 
-.investors-section, .activity-section, footer { width: min(1180px, calc(100% - 48px)); margin: 0 auto; }
+.investors-section, .activity-section, footer, .company-discussion-section { width: min(1180px, calc(100% - 48px)); margin: 0 auto; }
 .investors-section { padding: 68px 0 74px; border-top: 1px solid var(--line); }
+.company-discussion-section { padding: 48px 0 0; border-top: 1px solid var(--line); }
+.company-discussion-form { display: flex; gap: 10px; margin-bottom: 14px; }
+.company-discussion-form input { flex: 1; padding: 11px 14px; border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--ink); font-size: 13px; }
+.company-discussion-form input:focus { border-color: var(--green); outline: 2px solid rgba(11,122,90,.1); }
+.company-discussion-form button { padding: 11px 20px; border: none; border-radius: 8px; background: var(--ink); color: #fff; font-weight: 750; cursor: pointer; }
+.company-discussion-form button:disabled { opacity: .5; cursor: default; }
+.company-discussion-results { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+.company-discussion-result { display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--ink); cursor: pointer; text-align: left; }
+.company-discussion-result strong { font-size: 12px; }
+.company-discussion-result small { color: var(--muted); font-size: 10px; }
+.company-discussion-result.active { border-color: var(--green); background: rgba(11,122,90,.06); }
+.company-discussion-feed { padding-top: 4px; }
+.company-discussion-feed > small { display: block; margin-bottom: 8px; color: var(--muted); font-size: 11px; font-weight: 600; }
 .section-heading, .activity-heading { display: flex; justify-content: space-between; align-items: end; margin-bottom: 24px; gap: 24px; }
 .section-heading h2, .activity-heading h1 { margin: 7px 0 0; font-family: Georgia, "Times New Roman", serif; font-size: 35px; font-weight: 500; letter-spacing: -.035em; }
 .sort-controls { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -384,6 +397,8 @@ button:disabled { opacity: .55; cursor: wait; }
 .feed-post .feed-avatar { width: 26px; height: 26px; flex: 0 0 auto; font-size: 9px; }
 .feed-post-heading { display: flex; align-items: baseline; gap: 6px; margin-bottom: 2px; }
 .feed-post-heading strong { font-size: 10px; }
+.feed-post-username { color: inherit; text-decoration: none; }
+.feed-post-username:hover strong { text-decoration: underline; }
 .feed-post-heading time { color: var(--muted); font-size: 8px; font-family: var(--font-geist-mono), monospace; }
 .feed-post-translated { color: var(--muted); font-size: 7px; font-style: italic; }
 .feed-post p { margin: 0; color: var(--ink); font-size: 10px; line-height: 1.4; }
@@ -485,7 +500,7 @@ button:disabled { opacity: .55; cursor: wait; }
 .summary-dialog-toolbar input { width: 100%; padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--ink); font-size: 10px; }
 .summary-dialog-toolbar input:focus { border-color: var(--green); outline: 2px solid rgba(11,122,90,.1); }
 .summary-dialog-list { min-height: 180px; max-height: min(68vh, 680px); overflow-y: auto; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-content: start; gap: 7px; padding: 10px 14px 14px; }
-.summary-dialog-person { min-width: 0; display: grid; grid-template-columns: auto minmax(105px, 1fr) auto auto auto auto 18px; align-items: center; gap: 8px; padding: 9px; border: 1px solid var(--line); border-radius: 9px; background: #fff; color: var(--ink); cursor: pointer; text-align: left; transition: border-color .15s ease, box-shadow .15s ease; }
+.summary-dialog-person { min-width: 0; display: grid; grid-template-columns: auto minmax(105px, 1fr) auto auto auto auto auto 18px; align-items: center; gap: 8px; padding: 9px; border: 1px solid var(--line); border-radius: 9px; background: #fff; color: var(--ink); cursor: pointer; text-align: left; transition: border-color .15s ease, box-shadow .15s ease; }
 .summary-dialog-person:hover { border-color: var(--green); box-shadow: 0 6px 18px rgba(16,37,63,.07); }
 .summary-dialog-avatar { width: 36px; height: 36px; font-size: 9px; }
 .summary-dialog-person-name { min-width: 0; display: grid; gap: 2px; }
@@ -532,6 +547,7 @@ footer p { max-width: 690px; }
   .date-stepper { width: 100%; }
   .date-stepper button { flex: 1; }
   .investors-section { padding-bottom: 52px; }
+  .company-discussion-form { flex-direction: column; }
   .activity-section { padding: 16px 0 48px; }
   .summary-chips { width: 100%; }
   .summary-chips span { flex: 1; text-align: center; }
@@ -561,13 +577,14 @@ footer p { max-width: 690px; }
   .summary-dialog-toolbar { align-items: stretch; flex-direction: column; gap: 7px; }
   .summary-dialog-toolbar label { width: 100%; }
   .summary-dialog-list { max-height: none; padding: 8px; }
-  .summary-dialog-person { grid-template-columns: auto minmax(0, 1fr) auto auto; grid-template-rows: auto auto; gap: 3px 7px; }
+  .summary-dialog-person { grid-template-columns: auto minmax(0, 1fr) auto auto auto; grid-template-rows: auto auto; gap: 3px 7px; }
   .summary-dialog-avatar { grid-column: 1; grid-row: 1 / span 2; }
   .summary-dialog-person-name { grid-column: 2; grid-row: 1; }
   .summary-dialog-operation { grid-column: 2; grid-row: 2; }
   .summary-dialog-copiers { grid-column: 3; grid-row: 1 / span 2; }
   .summary-dialog-return:nth-of-type(5) { grid-column: 4; grid-row: 1; }
   .summary-dialog-return:nth-of-type(6) { grid-column: 4; grid-row: 2; }
+  .summary-dialog-return:nth-of-type(7) { grid-column: 5; grid-row: 1 / span 2; }
   .summary-dialog-open { display: none; }
   .portfolio-person .avatar { width: 52px; height: 52px; }
   .portfolio-person h2 { font-size: 23px; }

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { FormEvent } from "react";
 import type { AssetAllocationSeries, CurrentPortfolioPosition, DashboardPayload, FeedPost, GainPoint, Investor, InvestorExtendedStats, TradeEvent } from "../lib/types";
 import { consolidatePositions } from "../lib/portfolio";
 import { betterThanPct } from "../lib/format";
@@ -688,10 +689,6 @@ function ExtendedStatsSection({
               </strong>
             </span>
           </div>
-          <p className="chart-explainer">
-            Śr. zwrot rocznie: wynik przeliczony tak, jakby to samo tempo trwało cały rok. Popularny Inwestor (PI): odznaka eToro
-            dla śledzonych, aktywnie kopiowanych inwestorów — ranking porównuje tylko do tej grupy, nie do wszystkich użytkowników eToro.
-          </p>
           <div className="extended-stats-gains">
             <span><small>Wynik roczny</small><YearlyGainChart points={stats.yearlyGains} /></span>
             <span><small>Wynik miesięczny (cała historia)</small><MonthlyGainHeatmap points={stats.monthlyGains} /></span>
@@ -714,11 +711,6 @@ function ExtendedStatsCharts({ stats }: { stats: InvestorExtendedStats | null })
   );
 }
 
-function truncateText(text: string, maxLength: number) {
-  const clean = text.trim().replace(/\s+/g, " ");
-  return clean.length > maxLength ? `${clean.slice(0, maxLength).trimEnd()}…` : clean;
-}
-
 function FeedList({ posts, emptyLabel }: { posts: FeedPost[]; emptyLabel: string }) {
   if (!posts.length) return <div className="feed-empty">{emptyLabel}</div>;
   return (
@@ -733,15 +725,120 @@ function FeedList({ posts, emptyLabel }: { posts: FeedPost[]; emptyLabel: string
           </span>
           <div>
             <div className="feed-post-heading">
-              <strong>@{post.username}</strong>
+              <a
+                className="feed-post-username"
+                href={`https://www.etoro.com/pl/people/${encodeURIComponent(post.username)}`}
+                target="_blank"
+                rel="noreferrer"
+              >
+                <strong>@{post.username}</strong>
+              </a>
               <time>{formatRecentMoment(post.createdAt)}</time>
               <small className="feed-post-translated">tłumaczenie automatyczne</small>
             </div>
-            <p>{truncateText(post.text, 240)}</p>
+            <p>{post.text.trim().replace(/\s+/g, " ")}</p>
           </div>
         </article>
       ))}
     </div>
+  );
+}
+
+type InstrumentMatch = { instrumentId: number; symbol: string; displayName: string };
+
+function CompanyDiscussionSection() {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<InstrumentMatch[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState("");
+  const [selected, setSelected] = useState<InstrumentMatch | null>(null);
+  const [posts, setPosts] = useState<FeedPost[]>([]);
+  const [postsLoading, setPostsLoading] = useState(false);
+  const [postsError, setPostsError] = useState("");
+
+  const runSearch = async (event: FormEvent) => {
+    event.preventDefault();
+    const trimmed = query.trim();
+    if (!trimmed) return;
+    setSearchLoading(true);
+    setSearchError("");
+    setResults([]);
+    setSelected(null);
+    setPosts([]);
+    try {
+      const data = await api<{ items: InstrumentMatch[] }>(`/api/instrument-search?query=${encodeURIComponent(trimmed)}`);
+      setResults(data.items);
+      if (!data.items.length) setSearchError("Nie znaleziono spółki dla tego zapytania.");
+    } catch (error) {
+      setSearchError(error instanceof Error ? error.message : "Nie udało się wyszukać spółki.");
+    } finally {
+      setSearchLoading(false);
+    }
+  };
+
+  const openInstrument = async (instrument: InstrumentMatch) => {
+    setSelected(instrument);
+    setPosts([]);
+    setPostsError("");
+    setPostsLoading(true);
+    try {
+      const data = await api<{ posts: FeedPost[] }>(`/api/instrument-feed?instrumentId=${instrument.instrumentId}`);
+      setPosts(data.posts);
+    } catch (error) {
+      setPostsError(error instanceof Error ? error.message : "Nie udało się pobrać dyskusji.");
+    } finally {
+      setPostsLoading(false);
+    }
+  };
+
+  return (
+    <section className="company-discussion-section" aria-labelledby="company-discussion-title">
+      <div className="section-heading">
+        <div>
+          <span className="section-kicker">Dyskusja o spółce</span>
+          <h2 id="company-discussion-title">Sprawdź dyskusję na eToro</h2>
+        </div>
+      </div>
+      <form className="company-discussion-form" onSubmit={runSearch}>
+        <input
+          type="search"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Wpisz ticker lub nazwę spółki, np. NVDA lub Nvidia"
+          aria-label="Ticker lub nazwa spółki"
+        />
+        <button type="submit" disabled={searchLoading || !query.trim()}>{searchLoading ? "Szukam…" : "Szukaj"}</button>
+      </form>
+      {searchError && <div className="alert error">{searchError}</div>}
+      {results.length > 0 && (
+        <div className="company-discussion-results" role="list">
+          {results.map((item) => (
+            <button
+              type="button"
+              key={item.instrumentId}
+              className={`company-discussion-result ${selected?.instrumentId === item.instrumentId ? "active" : ""}`}
+              onClick={() => openInstrument(item)}
+            >
+              <strong>{item.symbol}</strong>
+              <small>{item.displayName}</small>
+            </button>
+          ))}
+        </div>
+      )}
+      {selected && (
+        <div className="company-discussion-feed">
+          <small>Dyskusja: {selected.symbol} · {selected.displayName}</small>
+          {postsLoading && (
+            <div className="portfolio-recent-loading" role="status" aria-live="polite">
+              <span className="loading-spinner small" aria-hidden="true" />
+              Pobieram dyskusję z eToro…
+            </div>
+          )}
+          {!postsLoading && postsError && <div className="alert error">{postsError}</div>}
+          {!postsLoading && !postsError && <FeedList posts={posts} emptyLabel="Brak postów na temat tego instrumentu." />}
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -1091,6 +1188,14 @@ function SummaryDialog({
                 <span className="summary-dialog-return">
                   <small>2 lata</small>
                   <b className={gainTone(investor?.gainTwoYears)}>{formatPercent(investor?.gainTwoYears, true)}</b>
+                </span>
+                <span className="summary-dialog-return">
+                  <small>Miejsce wśród PI</small>
+                  <b>
+                    {investor?.rankPosition != null && investor?.rankPoolSize != null
+                      ? `${investor.rankPosition}. z ${investor.rankPoolSize}`
+                      : "—"}
+                  </b>
                 </span>
                 <span className="summary-dialog-open" aria-hidden="true">›</span>
               </button>
@@ -1600,6 +1705,8 @@ export function Dashboard() {
         </div>
       </section>
 
+      <CompanyDiscussionSection />
+
       <section className="investors-section" aria-labelledby="investors-title">
         <div className="section-heading">
           <div><span className="section-kicker">Profile i wyniki</span><h2 id="investors-title">Obserwowani inwestorzy{data?.investors.length ? ` (${data.investors.length})` : ""}</h2></div>
@@ -1620,11 +1727,6 @@ export function Dashboard() {
             />
           )) : [1, 2, 3].map((value) => <div className="card-loading" key={value} />)}
         </div>
-        <p className="returns-note">
-          Stopy zwrotu są wartościami pola <code>gain</code> zwróconymi przez eToro:
-          od początku roku (<code>CurrYear</code>) i za ostatnie 2 lata
-          (<code>LastTwoYears</code>). Giełda Operacje ich nie przelicza.
-        </p>
       </section>
 
       {portfolioInvestor && (

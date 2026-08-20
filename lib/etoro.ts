@@ -710,11 +710,24 @@ const RANK_PAGE_SIZE = 100;
 
 type RankRow = { username: string; gain: number };
 
-async function fetchRankPage(page: number): Promise<{ rows: RankRow[]; totalItems: number | null }> {
+// popularInvestor=true only ever covers 566 accounts — eToro's own
+// complete "official PI" cohort, confirmed fixed across every period and
+// not something more requests can grow. Several tracked investors are
+// individually flagged isPopularInvestor:true on their own profile but
+// aren't among those 566 (a real inconsistency in eToro's own data).
+// copiersMin=7 instead: verified as a genuinely working, monotonically
+// sorted filter (unlike gainMin), giving a ~1900-2100 account pool that
+// rescues most of those cases while staying small enough to fully scan.
+// The one case it still can't rescue is an investor with fewer than 7
+// copiers (only leszekfx, at 2) — going lower would 10x+ the pool and the
+// worst-case page-scan cost for very little gain.
+const RANK_COPIERS_MIN = 7;
+
+export async function fetchRankPage(page: number): Promise<{ rows: RankRow[]; totalItems: number | null }> {
   const data = await etoroRequest<{
     results?: Array<{ username?: string; gain?: number }>;
     pagination?: { totalItems?: number };
-  }>(`/api/v2/portfolios/rankings?period=LastYear&sort=-gain&popularInvestor=true&pageSize=${RANK_PAGE_SIZE}&page=${page}`);
+  }>(`/api/v2/portfolios/rankings?period=LastYear&sort=-gain&copiersMin=${RANK_COPIERS_MIN}&pageSize=${RANK_PAGE_SIZE}&page=${page}`);
   return {
     rows: (data.results ?? []).flatMap((row) => row.username ? [{ username: row.username, gain: row.gain ?? 0 }] : []),
     totalItems: data.pagination?.totalItems ?? null,
@@ -724,19 +737,20 @@ async function fetchRankPage(page: number): Promise<{ rows: RankRow[]; totalItem
 // A prior version of this function estimated where `gain` alone would sort
 // within the pool via binary search. That looked reliable (verified against
 // one known investor) but turned out not to be: `isPopularInvestor` on an
-// investor's own profile and actual membership in this popularInvestor=true
-// LIST are different things — two investors (infinity-ai, mrmoire) each
-// individually flagged as PIs were confirmed, by scanning every page, to
-// not appear in this ranked list at all. Estimating a gain-based slot for
-// a non-member produces a real-looking but fabricated number, and when two
-// non-members' gains fall in the same gap between two actual members, they
-// get the identical fabricated position — which is exactly the "some
-// people have the same ranking" bug this replaces.
+// investor's own profile and actual membership in the ranked list are
+// different things — two investors (infinity-ai, mrmoire) each individually
+// flagged as PIs were confirmed, by scanning every page, to not appear in
+// the (then popularInvestor=true, 566-account) ranked list at all.
+// Estimating a gain-based slot for a non-member produces a real-looking but
+// fabricated number, and when two non-members' gains fall in the same gap
+// between two actual members, they get the identical fabricated position —
+// which is exactly the "some people have the same ranking" bug this
+// replaces.
 //
 // This version only ever reports a position for a VERIFIED row: it scans
 // pages in order (stopping as soon as the username is found) and returns
 // null — "not ranked", surfaced honestly in the UI — for anyone who
-// genuinely isn't a member, rather than guessing. Sequential (not
+// genuinely isn't in the pool, rather than guessing. Sequential (not
 // parallel) on purpose: this already runs as a paced background step, and
 // a burst of page requests is exactly the pattern that has tripped eToro's
 // rate limiter before. `getPage` is injectable for unit testing against a
@@ -763,6 +777,55 @@ export async function findExactRank(
     if (index !== -1) return { position: (page - 1) * RANK_PAGE_SIZE + index + 1, poolSize };
   }
   return null;
+}
+
+// Turns a user-typed ticker or company name into eToro instrumentIds. eToro's
+// /market-data/search takes a `fields` allowlist plus either an
+// internalSymbolFull or displayname filter — both do prefix/substring
+// matching (verified: "NVD" matches NVDA, NVDA.EUR, NVDY; "Nvidia" matches
+// the same via displayname), but neither param matches across both symbol
+// and name at once, so both are queried and merged. instrumentId can come
+// back negative (a placeholder row, not a real instrument) — filtered out.
+export async function searchInstruments(
+  query: string,
+): Promise<Array<{ instrumentId: number; symbol: string; displayName: string }>> {
+  const trimmed = query.trim();
+  if (!trimmed) return [];
+  const fields = "instrumentId,internalSymbolFull,displayname";
+  type SearchResponse = {
+    items?: Array<{ instrumentId?: number; internalSymbolFull?: string; displayname?: string }>;
+  };
+  const [bySymbol, byName] = await Promise.all([
+    etoroRequest<SearchResponse>(
+      `/api/v1/market-data/search?${new URLSearchParams({ internalSymbolFull: trimmed, fields, pageSize: "10" })}`,
+    ).catch(() => ({ items: [] }) as SearchResponse),
+    etoroRequest<SearchResponse>(
+      `/api/v1/market-data/search?${new URLSearchParams({ displayname: trimmed, fields, pageSize: "10" })}`,
+    ).catch(() => ({ items: [] }) as SearchResponse),
+  ]);
+  const seen = new Map<number, { instrumentId: number; symbol: string; displayName: string }>();
+  for (const item of [...(bySymbol.items ?? []), ...(byName.items ?? [])]) {
+    if (item.instrumentId == null || item.instrumentId < 0 || !item.internalSymbolFull) continue;
+    if (!seen.has(item.instrumentId)) {
+      seen.set(item.instrumentId, {
+        instrumentId: item.instrumentId,
+        symbol: item.internalSymbolFull,
+        displayName: item.displayname || item.internalSymbolFull,
+      });
+    }
+  }
+  return [...seen.values()].slice(0, 12);
+}
+
+// Same feed endpoint fetchInvestorExtendedStats uses for the "most traded
+// instrument" discussion panel, exposed standalone so a user can look up
+// discussion for any instrument by ticker/name, not just the ones already
+// tied to a tracked investor's top holding.
+export async function fetchInstrumentFeed(instrumentId: number): Promise<FeedPost[]> {
+  const result = await etoroRequest<RawFeedResponse>(`/api/v1/feeds/instrument/${instrumentId}?take=10`)
+    .then((value): PromiseSettledResult<RawFeedResponse> => ({ status: "fulfilled", value }))
+    .catch((reason): PromiseSettledResult<RawFeedResponse> => ({ status: "rejected", reason }));
+  return translateFeedPosts(toFeedPosts(result));
 }
 
 export async function fetchInvestorExtendedStats(username: string): Promise<InvestorExtendedStats> {
