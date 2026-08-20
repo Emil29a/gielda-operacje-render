@@ -113,11 +113,6 @@ export type GainPoint = {
   gain: number;
 };
 
-export type ExposurePoint = {
-  date: string;
-  absExposurePct: number;
-};
-
 export type AssetAllocationSeries = {
   labels: string[];
   points: Array<{ date: string; values: number[] }>;
@@ -145,7 +140,6 @@ export type InvestorExtendedStats = {
   topTradedAssetClass: string | null;
   monthlyGains: GainPoint[];
   yearlyGains: GainPoint[];
-  exposureHistory: ExposurePoint[];
   assetAllocationHistory: AssetAllocationSeries;
   rankPosition: number | null;
   rankPoolSize: number | null;

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { AssetAllocationSeries, CurrentPortfolioPosition, DashboardPayload, ExposurePoint, FeedPost, GainPoint, Investor, InvestorExtendedStats, TradeEvent } from "../lib/types";
+import type { AssetAllocationSeries, CurrentPortfolioPosition, DashboardPayload, FeedPost, GainPoint, Investor, InvestorExtendedStats, TradeEvent } from "../lib/types";
 import { consolidatePositions } from "../lib/portfolio";
 import { betterThanPct } from "../lib/format";
 import {
@@ -507,58 +507,39 @@ function formatMonthLabel(date: string) {
   return `${names[Number(month) - 1]} ${year.slice(2)}`;
 }
 
-function GainChips({ points, yearOnly = false }: { points: GainPoint[]; yearOnly?: boolean }) {
-  if (!points.length) return <span className="gain-chips-empty">brak danych</span>;
+function GainBarChart({ points, yearOnly = false }: { points: GainPoint[]; yearOnly?: boolean }) {
+  if (!points.length) return <span className="chart-empty">brak danych</span>;
+  const maxAbs = Math.max(...points.map((point) => Math.abs(point.gain)), 1);
+  const trackHeight = 64;
+  const half = trackHeight / 2;
   return (
-    <div className="gain-chips">
-      {points.map((point) => (
-        <span key={point.date} className={`gain-chip ${point.gain >= 0 ? "positive" : "negative"}`}>
-          <small>{yearOnly ? point.date.slice(0, 4) : formatMonthLabel(point.date)}</small>
-          {formatPercent(point.gain, true)}
-        </span>
-      ))}
+    <div className={`gain-bars ${yearOnly ? "gain-bars-yearly" : "gain-bars-monthly"}`}>
+      {points.map((point, index) => {
+        const barHeight = Math.max(1.5, (Math.abs(point.gain) / maxAbs) * half);
+        const top = point.gain >= 0 ? half - barHeight : half;
+        // 74 months of individually-labeled bars is unreadable — only January
+        // (and the very first bar) gets a printed year, everything else
+        // relies on the hover tooltip for its exact month/value.
+        const showLabel = yearOnly || index === 0 || point.date.slice(5, 7) === "01";
+        return (
+          <div
+            className="gain-bar-col"
+            key={point.date}
+            title={`${yearOnly ? point.date.slice(0, 4) : formatMonthLabel(point.date)}: ${formatPercent(point.gain, true)}`}
+          >
+            <div className="gain-bar-track" style={{ height: trackHeight }}>
+              <span className="gain-bar-zero" />
+              <span className={`gain-bar ${point.gain >= 0 ? "positive" : "negative"}`} style={{ top, height: barHeight }} />
+            </div>
+            <span className="gain-bar-label">{showLabel ? point.date.slice(0, 4) : ""}</span>
+          </div>
+        );
+      })}
     </div>
   );
 }
 
-const ALLOCATION_CHART_COLORS = ["#637082", "#0b7a5a", "#28659f", "#c95f42", "#b94335", "#8a6fb0", "#c9a227", "#a9a397"];
-
-function ExposureChart({ points }: { points: ExposurePoint[] }) {
-  if (points.length < 2) return <span className="chart-empty">brak danych</span>;
-  const width = 720;
-  const height = 160;
-  const padding = 8;
-  const values = points.map((point) => point.absExposurePct);
-  const max = Math.max(...values, 1);
-  const min = Math.min(0, ...values);
-  const range = max - min || 1;
-  const stepX = (width - padding * 2) / (points.length - 1);
-  const toY = (value: number) => height - padding - ((value - min) / range) * (height - padding * 2);
-  const linePoints = points.map((point, index) => `${padding + index * stepX},${toY(point.absExposurePct)}`).join(" ");
-  const areaPoints = `${padding},${height - padding} ${linePoints} ${width - padding},${height - padding}`;
-  const last = points[points.length - 1];
-  return (
-    <div className="chart-block">
-      <p className="chart-explainer">
-        Ile procent kapitału jest &bdquo;w rynku&rdquo; danego dnia (suma otwartych pozycji względem kapitału).
-        Powyżej 100% oznacza użycie dźwigni (pożyczonej ekspozycji), poniżej 100% oznacza, że część środków leży w gotówce.
-      </p>
-      <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" className="exposure-chart" role="img" aria-label="Ekspozycja portfela w czasie">
-        <line x1={padding} y1={toY(max)} x2={width - padding} y2={toY(max)} className="chart-gridline" />
-        <line x1={padding} y1={toY(min)} x2={width - padding} y2={toY(min)} className="chart-gridline" />
-        <polygon points={areaPoints} className="exposure-area" />
-        <polyline points={linePoints} className="exposure-line" />
-        <text x={padding} y={toY(max) - 4} className="chart-axis-label">{formatPercent(max)}</text>
-        <text x={padding} y={toY(min) + 11} className="chart-axis-label">{formatPercent(min)}</text>
-      </svg>
-      <div className="chart-footnote">
-        <span>{formatQuickDate(points[0].date)}</span>
-        <span>ostatnio: <strong>{formatPercent(last.absExposurePct)}</strong></span>
-        <span>{formatQuickDate(last.date)}</span>
-      </div>
-    </div>
-  );
-}
+const ALLOCATION_CHART_COLORS = ["#637082", "#0b7a5a", "#28659f", "#c95f42", "#b94335", "#8a6fb0", "#c9a227", "#a9a397", "#3f8f8f", "#8a5a2e"];
 
 function AssetAllocationChart({ series }: { series: AssetAllocationSeries }) {
   if (!series.points.length) return <span className="chart-empty">brak danych</span>;
@@ -639,12 +620,12 @@ function ExtendedStatsSection({
         <>
           <div className="extended-stats-grid">
             <span><small>Transakcje na plusie</small><strong>{formatPercent(stats.winRatio)}</strong></span>
-            <span><small>Zwrot annualizowany</small><strong className={gainTone(stats.annualizedReturn)}>{formatPercent(stats.annualizedReturn, true)}</strong></span>
+            <span><small>Śr. zwrot rocznie</small><strong className={gainTone(stats.annualizedReturn)}>{formatPercent(stats.annualizedReturn, true)}</strong></span>
             <span>
-              <small>Miejsce wśród PI wg zysku (rok)</small>
+              <small>Miejsce wśród Popularnych Inwestorów (rok)</small>
               <strong>
                 {stats.rankPosition != null && stats.rankPoolSize != null
-                  ? `${stats.rankPosition}. z ${stats.rankPoolSize} (lepszy niż ${betterThanPct(stats.rankPosition, stats.rankPoolSize)}% PI)`
+                  ? `${stats.rankPosition}. z ${stats.rankPoolSize} (lepszy niż ${betterThanPct(stats.rankPosition, stats.rankPoolSize)}%)`
                   : "—"}
               </strong>
             </span>
@@ -660,9 +641,13 @@ function ExtendedStatsSection({
               </strong>
             </span>
           </div>
+          <p className="chart-explainer">
+            Śr. zwrot rocznie: wynik przeliczony tak, jakby to samo tempo trwało cały rok. Popularny Inwestor (PI): odznaka eToro
+            dla śledzonych, aktywnie kopiowanych inwestorów — ranking porównuje tylko do tej grupy, nie do wszystkich użytkowników eToro.
+          </p>
           <div className="extended-stats-gains">
-            <span><small>Wynik roczny</small><GainChips points={stats.yearlyGains} yearOnly /></span>
-            <span><small>Wynik miesięczny (cała historia)</small><GainChips points={stats.monthlyGains} /></span>
+            <span><small>Wynik roczny</small><GainBarChart points={stats.yearlyGains} yearOnly /></span>
+            <span><small>Wynik miesięczny (cała historia, najedź na słupek po szczegóły)</small><GainBarChart points={stats.monthlyGains} /></span>
           </div>
         </>
       )}
@@ -673,10 +658,9 @@ function ExtendedStatsSection({
 function ExtendedStatsCharts({ stats }: { stats: InvestorExtendedStats | null }) {
   if (!stats) return null;
   return (
-    <section className="extended-stats-charts" aria-label="Ekspozycja i skład portfela w czasie">
-      <span className="section-kicker">Ekspozycja i skład portfela w czasie</span>
+    <section className="extended-stats-charts" aria-label="Skład portfela">
+      <span className="section-kicker">Skład portfela</span>
       <div className="extended-stats-charts-grid">
-        <div><small>Ekspozycja portfela (ost. 30 dni)</small><ExposureChart points={stats.exposureHistory} /></div>
         <div><small>Skład portfela wg instrumentu (ost. 30 dni)</small><AssetAllocationChart series={stats.assetAllocationHistory} /></div>
       </div>
     </section>
@@ -1490,6 +1474,7 @@ export function Dashboard() {
                       <div className="event-performance" aria-label={`Wyniki ${investor?.fullName ?? event.username} według eToro`}>
                         <span><small>Od roku</small><b className={gainTone(investor?.gainYtd)}>{formatPercent(investor?.gainYtd, true)}</b></span>
                         <span><small>2 lata</small><b className={gainTone(investor?.gainTwoYears)}>{formatPercent(investor?.gainTwoYears, true)}</b></span>
+                        <span><small>Aktywny od</small><b>{formatDateOnly(investor?.activeSince ?? null)}</b></span>
                       </div>
                     </button>
                     <div className="event-main">

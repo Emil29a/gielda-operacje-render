@@ -1,4 +1,4 @@
-import type { AssetAllocationSeries, ExposurePoint, FeedPost, GainPoint, HistoricalPosition, Instrument, InvestorExtendedStats, Investor, MarketRate, PortfolioPosition } from "./types";
+import type { AssetAllocationSeries, FeedPost, GainPoint, HistoricalPosition, Instrument, InvestorExtendedStats, Investor, MarketRate, PortfolioPosition } from "./types";
 import { shiftDateKey, warsawDateKey } from "./time";
 import { mapWithConcurrency } from "./concurrency";
 import { findKnownExchangeNames, findKnownInstruments, getState, getStateWithTimestamp, setState } from "./store";
@@ -648,7 +648,7 @@ function toFeedPosts(result: PromiseSettledResult<RawFeedResponse>): FeedPost[] 
 }
 
 export async function fetchInvestorExtendedStats(username: string, cid: number): Promise<InvestorExtendedStats> {
-  const [rankingResult, monthlyResult, yearlyResult, exposureResult, assetsResult, userPostsResult] = await Promise.allSettled([
+  const [rankingResult, monthlyResult, yearlyResult, assetsResult, userPostsResult] = await Promise.allSettled([
     etoroRequest<{
       data?: {
         gain?: number;
@@ -669,9 +669,6 @@ export async function fetchInvestorExtendedStats(username: string, cid: number):
     ),
     etoroRequest<{ gains?: Array<{ date: string; gain: number }> }>(
       `/api/v2/portfolios/${encodeURIComponent(username)}/gain/yearly?count=6`,
-    ),
-    etoroRequest<{ results?: Array<{ date: string; absExposurePct: number }> }>(
-      `/api/v2/portfolios/${encodeURIComponent(username)}/exposure/history?period=OneMonthAgo`,
     ),
     etoroRequest<{
       results?: Array<{
@@ -739,7 +736,7 @@ export async function fetchInvestorExtendedStats(username: string, cid: number):
     }
   }
 
-  // eToro's own `count` downsampling parameter on these two endpoints is a
+  // eToro's own `count` downsampling parameter on this endpoint is a
   // documented no-op (still returns every raw day regardless of the value
   // passed), so a ~30-50 point daily series is thinned client-side instead —
   // plenty of daily granularity is wasted on a small inline chart anyway.
@@ -750,21 +747,6 @@ export async function fetchInvestorExtendedStats(username: string, cid: number):
     return Array.from({ length: maxPoints }, (_, index) => items[Math.round(index * step)]);
   };
 
-  const exposureHistory: ExposurePoint[] = exposureResult.status === "fulfilled"
-    ? downsample(
-      (exposureResult.value.results ?? []).map((point) => ({
-        date: point.date,
-        absExposurePct: point.absExposurePct * 100,
-      })),
-      MAX_CHART_POINTS,
-    )
-    : [];
-
-  // eToro's per-instrument exposureItems breakdown consistently comes back
-  // empty regardless of investor size (verified on a 495-position account),
-  // so exposureHistory above only ever carries the aggregate line — the
-  // richer per-instrument stacked view instead uses assets/history, which
-  // does populate its per-instrument list.
   let assetAllocationHistory: AssetAllocationSeries = { labels: [], points: [] };
   if (assetsResult.status === "fulfilled") {
     const rawDays = downsample(assetsResult.value.results ?? [], MAX_CHART_POINTS);
@@ -777,7 +759,7 @@ export async function fetchInvestorExtendedStats(username: string, cid: number):
     }
     const topSymbols = [...totalsBySymbol.entries()]
       .sort((a, b) => b[1] - a[1])
-      .slice(0, 5)
+      .slice(0, 8)
       .map(([symbol]) => symbol);
     const labels = ["Gotówka", ...topSymbols, "Inne"];
     const points = rawDays.map((day) => {
@@ -807,7 +789,6 @@ export async function fetchInvestorExtendedStats(username: string, cid: number):
       : null,
     monthlyGains: toGainPoints(monthlyResult),
     yearlyGains: toGainPoints(yearlyResult),
-    exposureHistory,
     assetAllocationHistory,
     rankPosition,
     rankPoolSize,
