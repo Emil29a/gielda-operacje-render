@@ -139,6 +139,8 @@ export type InvestorExtendedStats = {
   monthlyGains: GainPoint[];
   yearlyGains: GainPoint[];
   assetAllocationHistory: AssetAllocationSeries;
+  rankPosition: number | null;
+  rankPoolSize: number | null;
   userPosts: FeedPost[];
   instrumentPosts: FeedPost[];
 };

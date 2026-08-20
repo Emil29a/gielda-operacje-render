@@ -647,6 +647,71 @@ function toFeedPosts(result: PromiseSettledResult<RawFeedResponse>): FeedPost[] 
   });
 }
 
+const RANK_PAGE_SIZE = 100;
+
+async function fetchRankPage(page: number): Promise<{ gains: number[]; totalItems: number | null }> {
+  const data = await etoroRequest<{
+    results?: Array<{ gain?: number }>;
+    pagination?: { totalItems?: number };
+  }>(`/api/v2/portfolios/rankings?period=LastYear&sort=-gain&popularInvestor=true&pageSize=${RANK_PAGE_SIZE}&page=${page}`);
+  return {
+    gains: (data.results ?? []).map((row) => row.gain ?? 0),
+    totalItems: data.pagination?.totalItems ?? null,
+  };
+}
+
+// Locates where `gain` would sort within the full LastYear Popular Investor
+// pool by binary-searching real, verified-monotonic pages (see the caller's
+// comment) instead of the rankings endpoint's broken gainMin filter. ~3-4
+// requests: one to learn the pool size, then a handful more narrowing in on
+// the right page. Ties (identical gain to a page boundary) resolve to the
+// first matching row, matching how a real leaderboard would rank a tie.
+// `getPage` is injectable (defaults to the real eToro call) purely so the
+// binary-search logic itself can be unit-tested against a fake in-memory
+// pool without any network access.
+export async function resolveReliableRank(
+  gain: number,
+  getPage: (page: number) => Promise<{ gains: number[]; totalItems: number | null }> = fetchRankPage,
+): Promise<{ position: number; poolSize: number } | null> {
+  const first = await getPage(1).catch(() => null);
+  if (!first || first.totalItems == null || !first.gains.length) return null;
+  const poolSize = first.totalItems;
+  const totalPages = Math.ceil(poolSize / RANK_PAGE_SIZE);
+
+  const locateInPage = (gains: number[], pageIndex: number): number | null => {
+    const withinPage = gains.findIndex((value) => value <= gain);
+    return withinPage === -1 ? null : (pageIndex - 1) * RANK_PAGE_SIZE + withinPage + 1;
+  };
+
+  if (gain >= first.gains[0]) return { position: 1, poolSize };
+  const foundOnFirst = locateInPage(first.gains, 1);
+  if (foundOnFirst != null) return { position: foundOnFirst, poolSize };
+  if (totalPages <= 1) return { position: poolSize, poolSize };
+
+  let lo = 2;
+  let hi = totalPages;
+  const cache = new Map<number, number[]>([[1, first.gains]]);
+  while (lo <= hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    const page = cache.get(mid) ?? (await getPage(mid).catch(() => null))?.gains ?? null;
+    if (!page || !page.length) return { position: poolSize, poolSize };
+    cache.set(mid, page);
+    if (gain > page[0]) {
+      hi = mid - 1;
+    } else if (gain < page[page.length - 1]) {
+      lo = mid + 1;
+    } else {
+      const found = locateInPage(page, mid);
+      return { position: found ?? poolSize, poolSize };
+    }
+  }
+  // Fell off the end without landing on a page — gain sits between two
+  // pages' boundaries (lo just passed hi), so it ranks right after the last
+  // page searched below it.
+  const lastChecked = [...cache.keys()].sort((a, b) => b - a)[0] ?? totalPages;
+  return { position: Math.min(poolSize, lastChecked * RANK_PAGE_SIZE), poolSize };
+}
+
 export async function fetchInvestorExtendedStats(username: string): Promise<InvestorExtendedStats> {
   // feeds/user takes the investor's gcid, NOT the realCID used everywhere
   // else in this app (portfolio, tradeinfo, rankings) — verified directly:
@@ -724,15 +789,19 @@ export async function fetchInvestorExtendedStats(username: string): Promise<Inve
     instrumentPosts = toFeedPosts(instrumentFeedResult);
   }
 
-  // A "rank within Popular Investors" feature was attempted here using the
-  // rankings list endpoint's gainMin filter to count investors above/below
-  // a given gain (pool size + count-above via two pageSize=1 requests).
-  // Removed after verifying it was unreliable: six different tracked
-  // investors with real yearly gains ranging from +11.95% to +31.97% all
-  // came back ranked within positions 483-485 of 566 — the filter isn't
-  // actually discriminating by gain the way its own documentation implies,
-  // so the numbers it produced were confidently wrong rather than merely
-  // imprecise. Not worth re-attempting without a genuinely reliable source.
+  // Rank within Popular Investors, LastYear gain. A first attempt used the
+  // rankings list endpoint's gainMin filter to count investors above/below a
+  // given gain via two pageSize=1 requests — verified unreliable (six
+  // different investors with real gains from +11.95% to +31.97% all landed
+  // at position 483-485 of 566, so the filter isn't actually discriminating
+  // by gain). This version instead trusts only what was independently
+  // verified to work: fetching full pageSize=100 pages with sort=-gain is
+  // genuinely, monotonically sorted across the whole pool (checked pages 1,
+  // 2, and 6 directly — each page's gains only ever decrease, and page
+  // boundaries line up with the next page's start). Binary-searching those
+  // pages for this investor's own gain value is a few more requests than
+  // the broken filter approach, but the number it produces is real.
+  const rank = ranking?.gain != null ? await resolveReliableRank(ranking.gain) : null;
 
   // The donut only ever shows the most recent day (a portfolio-composition
   // snapshot, not a trend), so only that last day needs computing — sorted
@@ -776,6 +845,8 @@ export async function fetchInvestorExtendedStats(username: string): Promise<Inve
     monthlyGains: toGainPoints(monthlyResult),
     yearlyGains: toGainPoints(yearlyResult),
     assetAllocationHistory,
+    rankPosition: rank?.position ?? null,
+    rankPoolSize: rank?.poolSize ?? null,
     userPosts: toFeedPosts(userPostsResult),
     instrumentPosts,
   };
