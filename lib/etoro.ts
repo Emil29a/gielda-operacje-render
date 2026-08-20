@@ -642,6 +642,8 @@ type RawFeedResponse = {
       created?: string;
       message?: { text?: string };
     };
+    emotionsData?: { like?: { paging?: { totalCount?: number } } };
+    summary?: { totalCommentsAndReplies?: number };
   }>;
 };
 
@@ -656,9 +658,33 @@ function toFeedPosts(result: PromiseSettledResult<RawFeedResponse>): FeedPost[] 
       avatarUrl: post.owner.avatar?.medium ?? post.owner.avatar?.small ?? null,
       createdAt: post.created,
       text: post.message.text,
+      likes: item.emotionsData?.like?.paging?.totalCount ?? 0,
+      comments: item.summary?.totalCommentsAndReplies ?? 0,
+      authorGainYtd: null,
+      authorGainTwoYears: null,
     }];
   });
 }
+
+// Adds each post author's own CurrYear/LastTwoYears gain (same tradeinfo
+// endpoint resolveInvestors uses) so a reader can weigh a post against the
+// poster's actual track record. Works for any eToro username, not just
+// tracked investors — verified directly. Best-effort per author: one
+// author's tradeinfo failing shouldn't blank out gains for every other post
+// in the feed, so each lookup is individually caught. Deduplicated by
+// username first since the same author often has multiple posts in one feed.
+async function fetchAuthorGains(usernames: string[]): Promise<Map<string, { gainYtd: number | null; gainTwoYears: number | null }>> {
+  const unique = [...new Set(usernames)];
+  const entries = await mapWithConcurrency(unique, INVESTOR_REQUEST_CONCURRENCY, async (username) => {
+    const [currentYear, lastTwoYears] = await Promise.all([
+      etoroRequest<{ gain?: number }>(`/api/v1/user-info/people/${encodeURIComponent(username)}/tradeinfo?period=CurrYear`).catch(() => null),
+      etoroRequest<{ gain?: number }>(`/api/v1/user-info/people/${encodeURIComponent(username)}/tradeinfo?period=LastTwoYears`).catch(() => null),
+    ]);
+    return [username, { gainYtd: currentYear?.gain ?? null, gainTwoYears: lastTwoYears?.gain ?? null }] as const;
+  });
+  return new Map(entries);
+}
+
 
 // eToro posts reference instruments as cashtags ($AAPL, $BRK.B, $SKHY) —
 // Google Translate has no notion of these and will sometimes mangle them
@@ -685,9 +711,8 @@ export function restoreTickers(text: string, tickers: string[]): string {
 // endpoint — the same one many open-source translation tools use. Best
 // effort only: on any failure (network, unexpected shape, rate limit) the
 // original text is kept rather than the post disappearing or erroring out
-// the whole dialog. Trimmed to 1800 chars first, both to stay well under
-// this endpoint's URL-length tolerance and because posts already get
-// truncated to ~240 chars for display anyway.
+// the whole dialog. Trimmed to 1800 chars first to stay well under this
+// endpoint's URL-length tolerance.
 async function translateToPolish(text: string): Promise<string> {
   const { text: withPlaceholders, tickers } = protectTickers(text.slice(0, 1800));
   try {
@@ -704,6 +729,20 @@ async function translateToPolish(text: string): Promise<string> {
 
 async function translateFeedPosts(posts: FeedPost[]): Promise<FeedPost[]> {
   return Promise.all(posts.map(async (post) => ({ ...post, text: await translateToPolish(post.text) })));
+}
+
+// Translation and author-gain lookups touch entirely different fields
+// (text vs. authorGainYtd/authorGainTwoYears), so they run concurrently
+// rather than one waiting on the other.
+async function hydrateFeedPosts(posts: FeedPost[]): Promise<FeedPost[]> {
+  const [translated, gains] = await Promise.all([
+    translateFeedPosts(posts),
+    fetchAuthorGains(posts.map((post) => post.username)),
+  ]);
+  return translated.map((post) => {
+    const gain = gains.get(post.username);
+    return gain ? { ...post, authorGainYtd: gain.gainYtd, authorGainTwoYears: gain.gainTwoYears } : post;
+  });
 }
 
 const RANK_PAGE_SIZE = 100;
@@ -821,11 +860,11 @@ export async function searchInstruments(
 // instrument" discussion panel, exposed standalone so a user can look up
 // discussion for any instrument by ticker/name, not just the ones already
 // tied to a tracked investor's top holding.
-export async function fetchInstrumentFeed(instrumentId: number): Promise<FeedPost[]> {
-  const result = await etoroRequest<RawFeedResponse>(`/api/v1/feeds/instrument/${instrumentId}?take=10`)
+export async function fetchInstrumentFeed(instrumentId: number, offset = 0): Promise<FeedPost[]> {
+  const result = await etoroRequest<RawFeedResponse>(`/api/v1/feeds/instrument/${instrumentId}?take=10&offset=${offset}`)
     .then((value): PromiseSettledResult<RawFeedResponse> => ({ status: "fulfilled", value }))
     .catch((reason): PromiseSettledResult<RawFeedResponse> => ({ status: "rejected", reason }));
-  return translateFeedPosts(toFeedPosts(result));
+  return hydrateFeedPosts(toFeedPosts(result));
 }
 
 export async function fetchInvestorExtendedStats(username: string): Promise<InvestorExtendedStats> {
@@ -903,7 +942,7 @@ export async function fetchInvestorExtendedStats(username: string): Promise<Inve
         .catch((reason): PromiseSettledResult<RawFeedResponse> => ({ status: "rejected", reason })),
     ]);
     topTradedInstrumentSymbol = instrument[0]?.symbol ?? null;
-    instrumentPosts = await translateFeedPosts(toFeedPosts(instrumentFeedResult));
+    instrumentPosts = await hydrateFeedPosts(toFeedPosts(instrumentFeedResult));
   }
 
   // Rank within Popular Investors and annualizedReturn are NOT recomputed
@@ -954,7 +993,7 @@ export async function fetchInvestorExtendedStats(username: string): Promise<Inve
     monthlyGains: toGainPoints(monthlyResult),
     yearlyGains: toGainPoints(yearlyResult),
     assetAllocationHistory,
-    userPosts: await translateFeedPosts(toFeedPosts(userPostsResult)),
+    userPosts: await hydrateFeedPosts(toFeedPosts(userPostsResult)),
     instrumentPosts,
   };
 }

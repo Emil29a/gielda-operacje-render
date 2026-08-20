@@ -9,7 +9,8 @@ export async function GET(request: Request) {
     if (!Number.isFinite(instrumentId)) {
       return Response.json({ error: "Brak parametru instrumentId." }, { status: 400 });
     }
-    const posts = await fetchInstrumentFeed(instrumentId);
+    const offset = Number(url.searchParams.get("offset") ?? "0") || 0;
+    const posts = await fetchInstrumentFeed(instrumentId, offset);
     return Response.json({ posts });
   } catch (error) {
     return Response.json(

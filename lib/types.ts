@@ -127,6 +127,10 @@ export type FeedPost = {
   avatarUrl: string | null;
   createdAt: string;
   text: string;
+  likes: number;
+  comments: number;
+  authorGainYtd: number | null;
+  authorGainTwoYears: number | null;
 };
 
 export type InvestorExtendedStats = {

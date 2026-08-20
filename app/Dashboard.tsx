@@ -711,11 +711,40 @@ function ExtendedStatsCharts({ stats }: { stats: InvestorExtendedStats | null })
   );
 }
 
+// An author "clears the bar" if either of their gain figures alone would —
+// OR, not AND: someone strong only over 2 years (a rough year offset by a
+// strong prior one) shouldn't be hidden just for a mediocre current year,
+// and vice versa. Missing data (lookup failed) can't be verified either way
+// and is treated as not clearing it, rather than assumed to pass.
+function clearsReturnBar(post: FeedPost) {
+  return (post.authorGainYtd != null && post.authorGainYtd > 20) ||
+    (post.authorGainTwoYears != null && post.authorGainTwoYears > 60);
+}
+
 function FeedList({ posts, emptyLabel }: { posts: FeedPost[]; emptyLabel: string }) {
+  const [sortMode, setSortMode] = useState<"new" | "popular">("new");
+  const [onlyStrongReturns, setOnlyStrongReturns] = useState(false);
   if (!posts.length) return <div className="feed-empty">{emptyLabel}</div>;
+  const filteredPosts = onlyStrongReturns ? posts.filter(clearsReturnBar) : posts;
+  const sortedPosts = sortMode === "popular"
+    ? [...filteredPosts].sort((a, b) => (b.likes + b.comments) - (a.likes + a.comments))
+    : filteredPosts;
   return (
     <div className="feed-list">
-      {posts.map((post) => (
+      <div className="feed-controls">
+        {posts.length > 1 && (
+          <div className="feed-sort-toggle" role="group" aria-label="Sortowanie postów">
+            <button type="button" className={sortMode === "new" ? "active" : ""} onClick={() => setSortMode("new")}>Najnowsze</button>
+            <button type="button" className={sortMode === "popular" ? "active" : ""} onClick={() => setSortMode("popular")}>Najpopularniejsze</button>
+          </div>
+        )}
+        <label className="feed-return-filter">
+          <input type="checkbox" checked={onlyStrongReturns} onChange={(event) => setOnlyStrongReturns(event.target.checked)} />
+          Tylko zwrot &gt;20% (rok) lub &gt;60% (2 lata)
+        </label>
+      </div>
+      {!sortedPosts.length && <div className="feed-empty">Brak postów spełniających kryteria zwrotu.</div>}
+      {sortedPosts.map((post) => (
         <article className="feed-post" key={post.id}>
           <span className="avatar feed-avatar">
             {post.avatarUrl ? (
@@ -736,6 +765,15 @@ function FeedList({ posts, emptyLabel }: { posts: FeedPost[]; emptyLabel: string
               <time>{formatRecentMoment(post.createdAt)}</time>
               <small className="feed-post-translated">tłumaczenie automatyczne</small>
             </div>
+            <div className="feed-post-author-stats">
+              {(post.authorGainYtd != null || post.authorGainTwoYears != null) && (
+                <>
+                  <span>Od roku <b className={gainTone(post.authorGainYtd)}>{formatPercent(post.authorGainYtd, true)}</b></span>
+                  <span>2 lata <b className={gainTone(post.authorGainTwoYears)}>{formatPercent(post.authorGainTwoYears, true)}</b></span>
+                </>
+              )}
+              <span className="feed-post-engagement">👍 {formatNumber(post.likes)} · 💬 {formatNumber(post.comments)}</span>
+            </div>
             <p>{post.text.trim().replace(/\s+/g, " ")}</p>
           </div>
         </article>
@@ -755,6 +793,8 @@ function CompanyDiscussionSection() {
   const [posts, setPosts] = useState<FeedPost[]>([]);
   const [postsLoading, setPostsLoading] = useState(false);
   const [postsError, setPostsError] = useState("");
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [loadMoreError, setLoadMoreError] = useState("");
 
   const runSearch = async (event: FormEvent) => {
     event.preventDefault();
@@ -780,6 +820,7 @@ function CompanyDiscussionSection() {
     setSelected(instrument);
     setPosts([]);
     setPostsError("");
+    setLoadMoreError("");
     setPostsLoading(true);
     try {
       const data = await api<{ posts: FeedPost[] }>(`/api/instrument-feed?instrumentId=${instrument.instrumentId}`);
@@ -788,6 +829,23 @@ function CompanyDiscussionSection() {
       setPostsError(error instanceof Error ? error.message : "Nie udało się pobrać dyskusji.");
     } finally {
       setPostsLoading(false);
+    }
+  };
+
+  const loadMorePosts = async () => {
+    if (!selected) return;
+    setLoadMoreError("");
+    setLoadingMore(true);
+    try {
+      const data = await api<{ posts: FeedPost[] }>(`/api/instrument-feed?instrumentId=${selected.instrumentId}&offset=${posts.length}`);
+      setPosts((current) => {
+        const seen = new Set(current.map((post) => post.id));
+        return [...current, ...data.posts.filter((post) => !seen.has(post.id))];
+      });
+    } catch (error) {
+      setLoadMoreError(error instanceof Error ? error.message : "Nie udało się pobrać kolejnych postów.");
+    } finally {
+      setLoadingMore(false);
     }
   };
 
@@ -835,7 +893,19 @@ function CompanyDiscussionSection() {
             </div>
           )}
           {!postsLoading && postsError && <div className="alert error">{postsError}</div>}
-          {!postsLoading && !postsError && <FeedList posts={posts} emptyLabel="Brak postów na temat tego instrumentu." />}
+          {!postsLoading && !postsError && (
+            <>
+              <FeedList posts={posts} emptyLabel="Brak postów na temat tego instrumentu." />
+              {posts.length > 0 && (
+                <div className="feed-load-more">
+                  <button type="button" onClick={loadMorePosts} disabled={loadingMore}>
+                    {loadingMore ? "Ładuję…" : "Pokaż więcej"}
+                  </button>
+                  {loadMoreError && <div className="alert error">{loadMoreError}</div>}
+                </div>
+              )}
+            </>
+          )}
         </div>
       )}
     </section>
@@ -1669,7 +1739,10 @@ export function Dashboard() {
                         <strong>{event.symbol}</strong><span>{event.displayName}</span>
                       </div>
                       <div className="event-details">
-                        <span>{eventContext(event)}</span>
+                        <span>
+                          {eventContext(event)}
+                          {event.eventType === "OPEN" && event.openRate != null && ` po kursie ${formatRate(event.openRate)}`}
+                        </span>
                         <span>{event.exchangeName ?? "Rynek nieopisany przez eToro"} · instrument #{event.instrumentId}</span>
                         {event.investmentPct != null && <span>{formatPercent(event.investmentPct)} portfela</span>}
                         {mergedEvents.length > 1 && <span><strong>{mergedEvents.length} pozycje połączone w jeden wpis</strong></span>}
