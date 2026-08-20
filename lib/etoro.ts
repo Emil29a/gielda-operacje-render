@@ -247,12 +247,10 @@ export async function resolveInvestors(usernames: string[], slotOffset = 0): Pro
       const avatar = originalAvatar?.url || avatars.sort(
         (a, b) => (b.width ?? 0) - (a.width ?? 0),
       )[0]?.url;
-      // Reuses the same binary-search rank lookup as the investor-profile
-      // dialog's extended stats (see resolveReliableRank) — computed here
-      // too, gradually, so the journal can show it inline per event without
+      // Verified list-membership rank (see findExactRank) — computed here
+      // gradually, so the journal can show it inline per event without
       // needing a live fetch for every investor mentioned that day.
-      const rankingGain = rankingRow?.data?.gain;
-      const rank = rankingGain != null ? await resolveReliableRank(rankingGain) : null;
+      const rank = await findExactRank(username);
       return {
         slot: slotOffset + index + 1,
         username: profile.username,
@@ -710,67 +708,61 @@ async function translateFeedPosts(posts: FeedPost[]): Promise<FeedPost[]> {
 
 const RANK_PAGE_SIZE = 100;
 
-async function fetchRankPage(page: number): Promise<{ gains: number[]; totalItems: number | null }> {
+type RankRow = { username: string; gain: number };
+
+async function fetchRankPage(page: number): Promise<{ rows: RankRow[]; totalItems: number | null }> {
   const data = await etoroRequest<{
-    results?: Array<{ gain?: number }>;
+    results?: Array<{ username?: string; gain?: number }>;
     pagination?: { totalItems?: number };
   }>(`/api/v2/portfolios/rankings?period=LastYear&sort=-gain&popularInvestor=true&pageSize=${RANK_PAGE_SIZE}&page=${page}`);
   return {
-    gains: (data.results ?? []).map((row) => row.gain ?? 0),
+    rows: (data.results ?? []).flatMap((row) => row.username ? [{ username: row.username, gain: row.gain ?? 0 }] : []),
     totalItems: data.pagination?.totalItems ?? null,
   };
 }
 
-// Locates where `gain` would sort within the full LastYear Popular Investor
-// pool by binary-searching real, verified-monotonic pages (see the caller's
-// comment) instead of the rankings endpoint's broken gainMin filter. ~3-4
-// requests: one to learn the pool size, then a handful more narrowing in on
-// the right page. Ties (identical gain to a page boundary) resolve to the
-// first matching row, matching how a real leaderboard would rank a tie.
-// `getPage` is injectable (defaults to the real eToro call) purely so the
-// binary-search logic itself can be unit-tested against a fake in-memory
-// pool without any network access.
-export async function resolveReliableRank(
-  gain: number,
-  getPage: (page: number) => Promise<{ gains: number[]; totalItems: number | null }> = fetchRankPage,
+// A prior version of this function estimated where `gain` alone would sort
+// within the pool via binary search. That looked reliable (verified against
+// one known investor) but turned out not to be: `isPopularInvestor` on an
+// investor's own profile and actual membership in this popularInvestor=true
+// LIST are different things — two investors (infinity-ai, mrmoire) each
+// individually flagged as PIs were confirmed, by scanning every page, to
+// not appear in this ranked list at all. Estimating a gain-based slot for
+// a non-member produces a real-looking but fabricated number, and when two
+// non-members' gains fall in the same gap between two actual members, they
+// get the identical fabricated position — which is exactly the "some
+// people have the same ranking" bug this replaces.
+//
+// This version only ever reports a position for a VERIFIED row: it scans
+// pages in order (stopping as soon as the username is found) and returns
+// null — "not ranked", surfaced honestly in the UI — for anyone who
+// genuinely isn't a member, rather than guessing. Sequential (not
+// parallel) on purpose: this already runs as a paced background step, and
+// a burst of page requests is exactly the pattern that has tripped eToro's
+// rate limiter before. `getPage` is injectable for unit testing against a
+// fake in-memory pool.
+export async function findExactRank(
+  username: string,
+  getPage: (page: number) => Promise<{ rows: RankRow[]; totalItems: number | null }> = fetchRankPage,
 ): Promise<{ position: number; poolSize: number } | null> {
+  const target = username.toLowerCase();
   const first = await getPage(1).catch(() => null);
-  if (!first || first.totalItems == null || !first.gains.length) return null;
+  if (!first || first.totalItems == null) return null;
   const poolSize = first.totalItems;
   const totalPages = Math.ceil(poolSize / RANK_PAGE_SIZE);
 
-  const locateInPage = (gains: number[], pageIndex: number): number | null => {
-    const withinPage = gains.findIndex((value) => value <= gain);
-    return withinPage === -1 ? null : (pageIndex - 1) * RANK_PAGE_SIZE + withinPage + 1;
-  };
+  const indexOf = (rows: RankRow[]) => rows.findIndex((row) => row.username.toLowerCase() === target);
 
-  if (gain >= first.gains[0]) return { position: 1, poolSize };
-  const foundOnFirst = locateInPage(first.gains, 1);
-  if (foundOnFirst != null) return { position: foundOnFirst, poolSize };
-  if (totalPages <= 1) return { position: poolSize, poolSize };
+  const foundOnFirst = indexOf(first.rows);
+  if (foundOnFirst !== -1) return { position: foundOnFirst + 1, poolSize };
 
-  let lo = 2;
-  let hi = totalPages;
-  const cache = new Map<number, number[]>([[1, first.gains]]);
-  while (lo <= hi) {
-    const mid = Math.floor((lo + hi) / 2);
-    const page = cache.get(mid) ?? (await getPage(mid).catch(() => null))?.gains ?? null;
-    if (!page || !page.length) return { position: poolSize, poolSize };
-    cache.set(mid, page);
-    if (gain > page[0]) {
-      hi = mid - 1;
-    } else if (gain < page[page.length - 1]) {
-      lo = mid + 1;
-    } else {
-      const found = locateInPage(page, mid);
-      return { position: found ?? poolSize, poolSize };
-    }
+  for (let page = 2; page <= totalPages; page++) {
+    const data = await getPage(page).catch(() => null);
+    if (!data) continue;
+    const index = indexOf(data.rows);
+    if (index !== -1) return { position: (page - 1) * RANK_PAGE_SIZE + index + 1, poolSize };
   }
-  // Fell off the end without landing on a page — gain sits between two
-  // pages' boundaries (lo just passed hi), so it ranks right after the last
-  // page searched below it.
-  const lastChecked = [...cache.keys()].sort((a, b) => b - a)[0] ?? totalPages;
-  return { position: Math.min(poolSize, lastChecked * RANK_PAGE_SIZE), poolSize };
+  return null;
 }
 
 export async function fetchInvestorExtendedStats(username: string): Promise<InvestorExtendedStats> {
