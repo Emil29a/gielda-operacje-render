@@ -11,6 +11,9 @@ export type Investor = {
   copiers: number | null;
   updatedAt: string;
   activeSince: string | null;
+  annualizedReturn: number | null;
+  rankPosition: number | null;
+  rankPoolSize: number | null;
   openPositions?: number;
 };
 
@@ -131,7 +134,6 @@ export type InvestorExtendedStats = {
   trades: number | null;
   totalTradedInstruments: number | null;
   avgPosSize: number | null;
-  annualizedReturn: number | null;
   topTradedInstrumentId: number | null;
   topTradedInstrumentSymbol: string | null;
   topTradedInstrumentPct: number | null;
@@ -139,8 +141,6 @@ export type InvestorExtendedStats = {
   monthlyGains: GainPoint[];
   yearlyGains: GainPoint[];
   assetAllocationHistory: AssetAllocationSeries;
-  rankPosition: number | null;
-  rankPoolSize: number | null;
   userPosts: FeedPost[];
   instrumentPosts: FeedPost[];
 };

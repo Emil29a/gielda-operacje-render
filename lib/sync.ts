@@ -151,6 +151,9 @@ export async function ensureBootstrapped(): Promise<{ investors: Investor[]; jus
       copiers: null,
       updatedAt: new Date(0).toISOString(),
       activeSince: null,
+      annualizedReturn: null,
+      rankPosition: null,
+      rankPoolSize: null,
     };
   });
   await replaceInvestors(seeded, source !== "etoro-live-own-positions-v2");
@@ -209,7 +212,8 @@ export async function synchronizePositionsOnly() {
     // investors that are still missing it — 3 requests each, the most
     // expensive step, so it stays smallest and last.
     const missingStats = investors.filter(
-      (investor) => investor.cid !== 0 && (investor.gainYtd == null || investor.activeSince == null),
+      (investor) => investor.cid !== 0
+        && (investor.gainYtd == null || investor.activeSince == null || investor.rankPosition == null),
     ).slice(0, FULL_PROFILE_BATCH_LIMIT);
     if (missingStats.length) {
       const resolved = await resolvePaced(

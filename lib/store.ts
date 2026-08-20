@@ -100,6 +100,15 @@ export async function ensureSchema() {
   if (!columnNames.has("active_since")) {
     additions.push(d1.prepare("ALTER TABLE tracked_investors ADD COLUMN active_since TEXT"));
   }
+  if (!columnNames.has("annualized_return")) {
+    additions.push(d1.prepare("ALTER TABLE tracked_investors ADD COLUMN annualized_return REAL"));
+  }
+  if (!columnNames.has("rank_position")) {
+    additions.push(d1.prepare("ALTER TABLE tracked_investors ADD COLUMN rank_position INTEGER"));
+  }
+  if (!columnNames.has("rank_pool_size")) {
+    additions.push(d1.prepare("ALTER TABLE tracked_investors ADD COLUMN rank_pool_size INTEGER"));
+  }
   if (additions.length) await d1.batch(additions);
 
   const positionColumns = await d1
@@ -124,12 +133,14 @@ export async function listInvestors(): Promise<Investor[]> {
       `SELECT i.slot, i.username, i.cid, i.full_name, i.avatar_url,
         i.risk_score, i.daily_gain, i.gain_ytd, i.gain_two_years,
         i.copiers, i.updated_at, i.active_since,
+        i.annualized_return, i.rank_position, i.rank_pool_size,
         COUNT(p.position_id) AS open_positions
       FROM tracked_investors i
       LEFT JOIN current_positions p ON p.username = i.username
       GROUP BY i.slot, i.username, i.cid, i.full_name, i.avatar_url,
         i.risk_score, i.daily_gain, i.gain_ytd, i.gain_two_years,
-        i.copiers, i.updated_at, i.active_since
+        i.copiers, i.updated_at, i.active_since,
+        i.annualized_return, i.rank_position, i.rank_pool_size
       ORDER BY i.slot`,
     )
     .all<Record<string, unknown>>();
@@ -146,6 +157,9 @@ export async function listInvestors(): Promise<Investor[]> {
     copiers: row.copiers == null ? null : Number(row.copiers),
     updatedAt: String(row.updated_at),
     activeSince: row.active_since ? String(row.active_since) : null,
+    annualizedReturn: row.annualized_return == null ? null : Number(row.annualized_return),
+    rankPosition: row.rank_position == null ? null : Number(row.rank_position),
+    rankPoolSize: row.rank_pool_size == null ? null : Number(row.rank_pool_size),
     openPositions: Number(row.open_positions ?? 0),
   }));
 }
@@ -169,8 +183,9 @@ export async function replaceInvestors(investors: Investor[], clearHistory = fal
         .prepare(
           `INSERT INTO tracked_investors
           (slot, username, cid, full_name, avatar_url, risk_score, daily_gain,
-           gain_ytd, gain_two_years, copiers, updated_at, active_since)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           gain_ytd, gain_two_years, copiers, updated_at, active_since,
+           annualized_return, rank_position, rank_pool_size)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .bind(
           index + 1,
@@ -185,6 +200,9 @@ export async function replaceInvestors(investors: Investor[], clearHistory = fal
           investor.copiers,
           investor.updatedAt,
           investor.activeSince ?? null,
+          investor.annualizedReturn ?? null,
+          investor.rankPosition ?? null,
+          investor.rankPoolSize ?? null,
         ),
     ),
   );
@@ -205,15 +223,19 @@ export async function updateInvestors(investors: Investor[]) {
           // number over the real slot risked colliding with another
           // investor's slot (both being a small number like 0-5), which
           // fails on tracked_investors' UNIQUE/PRIMARY KEY constraint.
-          // active_since uses COALESCE(new, existing): the cheap
-          // identity-only resolve (resolveInvestorIdentities) doesn't fetch
-          // gain history, so it always passes null here — without COALESCE,
-          // running it for an investor who'd already gone through a full
-          // resolve would wipe out a registration date that call already had.
+          // active_since/annualized_return/rank_position/rank_pool_size all
+          // use COALESCE(new, existing): the cheap identity-only resolve
+          // (resolveInvestorIdentities) doesn't fetch any of this, so it
+          // always passes null here — without COALESCE, running it for an
+          // investor who'd already gone through a full resolve would wipe
+          // out data that call already had.
           `UPDATE tracked_investors
           SET cid = ?, full_name = ?, avatar_url = ?, risk_score = ?,
               daily_gain = ?, gain_ytd = ?, gain_two_years = ?, copiers = ?, updated_at = ?,
-              active_since = COALESCE(?, active_since)
+              active_since = COALESCE(?, active_since),
+              annualized_return = COALESCE(?, annualized_return),
+              rank_position = COALESCE(?, rank_position),
+              rank_pool_size = COALESCE(?, rank_pool_size)
           WHERE LOWER(username) = LOWER(?)`,
         )
         .bind(
@@ -227,6 +249,9 @@ export async function updateInvestors(investors: Investor[]) {
           investor.copiers,
           investor.updatedAt,
           investor.activeSince ?? null,
+          investor.annualizedReturn ?? null,
+          investor.rankPosition ?? null,
+          investor.rankPoolSize ?? null,
           investor.username,
         ),
     ),

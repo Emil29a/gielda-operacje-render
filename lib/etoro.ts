@@ -186,6 +186,9 @@ export async function resolveInvestorIdentities(usernames: string[], slotOffset 
         copiers: null,
         updatedAt: new Date().toISOString(),
         activeSince: null,
+        annualizedReturn: null,
+        rankPosition: null,
+        rankPoolSize: null,
       };
     },
   );
@@ -224,12 +227,15 @@ export async function resolveInvestors(usernames: string[], slotOffset = 0): Pro
       // the earliest entry in this investor's full monthly gain history —
       // its timestamp lines up exactly with the real "active since" date
       // shown on eToro's own profile pages.
-      const [currentYear, lastTwoYears, gainHistory] = await Promise.all([
+      const [currentYear, lastTwoYears, gainHistory, rankingRow] = await Promise.all([
         etoroRequest<TradeInfo>(`${tradeInfoPath}?period=CurrYear`),
         etoroRequest<TradeInfo>(`${tradeInfoPath}?period=LastTwoYears`),
         etoroRequest<{ monthly?: Array<{ timestamp: string }> }>(
           `/api/v1/user-info/people/${encodeURIComponent(username)}/gain`,
         ).catch(() => ({ monthly: [] })),
+        etoroRequest<{ data?: { gain?: number; annualizedReturn?: number } }>(
+          `/api/v2/portfolios/${encodeURIComponent(username)}/rankings?period=LastYear`,
+        ).catch(() => null),
       ]);
       if (!currentYear.isPopularInvestor) {
         throw new Error(`@${username} nie jest obecnie oznaczony jako Popular Investor.`);
@@ -241,6 +247,12 @@ export async function resolveInvestors(usernames: string[], slotOffset = 0): Pro
       const avatar = originalAvatar?.url || avatars.sort(
         (a, b) => (b.width ?? 0) - (a.width ?? 0),
       )[0]?.url;
+      // Reuses the same binary-search rank lookup as the investor-profile
+      // dialog's extended stats (see resolveReliableRank) — computed here
+      // too, gradually, so the journal can show it inline per event without
+      // needing a live fetch for every investor mentioned that day.
+      const rankingGain = rankingRow?.data?.gain;
+      const rank = rankingGain != null ? await resolveReliableRank(rankingGain) : null;
       return {
         slot: slotOffset + index + 1,
         username: profile.username,
@@ -254,6 +266,9 @@ export async function resolveInvestors(usernames: string[], slotOffset = 0): Pro
         copiers: currentYear.copiers ?? null,
         updatedAt: new Date().toISOString(),
         activeSince: gainHistory.monthly?.[0]?.timestamp ?? null,
+        annualizedReturn: rankingRow?.data?.annualizedReturn != null ? rankingRow.data.annualizedReturn * 100 : null,
+        rankPosition: rank?.position ?? null,
+        rankPoolSize: rank?.poolSize ?? null,
       };
     },
   );
@@ -647,6 +662,32 @@ function toFeedPosts(result: PromiseSettledResult<RawFeedResponse>): FeedPost[] 
   });
 }
 
+// eToro's own API has no translation endpoint, so this calls Google
+// Translate's unofficial (undocumented, no API key required) single-string
+// endpoint — the same one many open-source translation tools use. Best
+// effort only: on any failure (network, unexpected shape, rate limit) the
+// original text is kept rather than the post disappearing or erroring out
+// the whole dialog. Trimmed to 1800 chars first, both to stay well under
+// this endpoint's URL-length tolerance and because posts already get
+// truncated to ~240 chars for display anyway.
+async function translateToPolish(text: string): Promise<string> {
+  const trimmed = text.slice(0, 1800);
+  try {
+    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=pl&dt=t&q=${encodeURIComponent(trimmed)}`;
+    const response = await fetch(url, { signal: AbortSignal.timeout(6000) });
+    if (!response.ok) return text;
+    const data = (await response.json()) as [Array<[string, string]>] | null;
+    const translated = data?.[0]?.map((segment) => segment[0]).join("");
+    return translated || text;
+  } catch {
+    return text;
+  }
+}
+
+async function translateFeedPosts(posts: FeedPost[]): Promise<FeedPost[]> {
+  return Promise.all(posts.map(async (post) => ({ ...post, text: await translateToPolish(post.text) })));
+}
+
 const RANK_PAGE_SIZE = 100;
 
 async function fetchRankPage(page: number): Promise<{ gains: number[]; totalItems: number | null }> {
@@ -768,12 +809,13 @@ export async function fetchInvestorExtendedStats(username: string): Promise<Inve
     throw reason instanceof Error ? reason : new Error(String(reason));
   }
   const ranking = rankingResult.value.data ?? null;
-  // eToro returns gain history oldest-first; reversed here so both the
-  // yearly and monthly chip rows read newest-first, matching the rest of
-  // the dashboard's "most recent first" convention.
+  // eToro returns gain history oldest-first — kept as-is, since the yearly
+  // bar chart reads left-to-right as oldest-to-newest and the monthly
+  // heatmap re-buckets everything into a year/month grid regardless of
+  // input order.
   const toGainPoints = (result: typeof monthlyResult): GainPoint[] =>
     result.status === "fulfilled"
-      ? (result.value.gains ?? []).map((point) => ({ date: point.date, gain: point.gain * 100 })).reverse()
+      ? (result.value.gains ?? []).map((point) => ({ date: point.date, gain: point.gain * 100 }))
       : [];
 
   let topTradedInstrumentSymbol: string | null = null;
@@ -786,22 +828,15 @@ export async function fetchInvestorExtendedStats(username: string): Promise<Inve
         .catch((reason): PromiseSettledResult<RawFeedResponse> => ({ status: "rejected", reason })),
     ]);
     topTradedInstrumentSymbol = instrument[0]?.symbol ?? null;
-    instrumentPosts = toFeedPosts(instrumentFeedResult);
+    instrumentPosts = await translateFeedPosts(toFeedPosts(instrumentFeedResult));
   }
 
-  // Rank within Popular Investors, LastYear gain. A first attempt used the
-  // rankings list endpoint's gainMin filter to count investors above/below a
-  // given gain via two pageSize=1 requests — verified unreliable (six
-  // different investors with real gains from +11.95% to +31.97% all landed
-  // at position 483-485 of 566, so the filter isn't actually discriminating
-  // by gain). This version instead trusts only what was independently
-  // verified to work: fetching full pageSize=100 pages with sort=-gain is
-  // genuinely, monotonically sorted across the whole pool (checked pages 1,
-  // 2, and 6 directly — each page's gains only ever decrease, and page
-  // boundaries line up with the next page's start). Binary-searching those
-  // pages for this investor's own gain value is a few more requests than
-  // the broken filter approach, but the number it produces is real.
-  const rank = ranking?.gain != null ? await resolveReliableRank(ranking.gain) : null;
+  // Rank within Popular Investors and annualizedReturn are NOT recomputed
+  // here — they're already computed periodically in resolveInvestors() (see
+  // that function's own comment on the binary-search approach) and stored
+  // on the investor row, which the dialog already has in scope. Doing it
+  // again per dialog-open would cost ~4-5 extra requests for a number this
+  // codepath already has cheap access to.
 
   // The donut only ever shows the most recent day (a portfolio-composition
   // snapshot, not a trend), so only that last day needs computing — sorted
@@ -835,7 +870,6 @@ export async function fetchInvestorExtendedStats(username: string): Promise<Inve
     trades: ranking?.trades ?? null,
     totalTradedInstruments: ranking?.totalTradedInstruments ?? null,
     avgPosSize: ranking?.avgPosSize ?? null,
-    annualizedReturn: ranking?.annualizedReturn != null ? ranking.annualizedReturn * 100 : null,
     topTradedInstrumentId: ranking?.topTradedInstrumentId ?? null,
     topTradedInstrumentSymbol,
     topTradedInstrumentPct: ranking?.topTradedInstrumentPct ?? null,
@@ -845,9 +879,7 @@ export async function fetchInvestorExtendedStats(username: string): Promise<Inve
     monthlyGains: toGainPoints(monthlyResult),
     yearlyGains: toGainPoints(yearlyResult),
     assetAllocationHistory,
-    rankPosition: rank?.position ?? null,
-    rankPoolSize: rank?.poolSize ?? null,
-    userPosts: toFeedPosts(userPostsResult),
+    userPosts: await translateFeedPosts(toFeedPosts(userPostsResult)),
     instrumentPosts,
   };
 }

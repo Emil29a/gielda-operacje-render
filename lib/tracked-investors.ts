@@ -45,6 +45,9 @@ export function trackedInvestorPlaceholders(): Investor[] {
     copiers: null,
     updatedAt,
     activeSince: null,
+    annualizedReturn: null,
+    rankPosition: null,
+    rankPoolSize: null,
   }));
 }
 

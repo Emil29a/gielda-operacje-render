@@ -637,10 +637,12 @@ function AssetAllocationChart({ series }: { series: AssetAllocationSeries }) {
 }
 
 function ExtendedStatsSection({
+  investor,
   loading,
   error,
   stats,
 }: {
+  investor: Investor;
   loading: boolean;
   error: string;
   stats: InvestorExtendedStats | null;
@@ -663,12 +665,12 @@ function ExtendedStatsSection({
         <>
           <div className="extended-stats-grid">
             <span><small>Transakcje na plusie</small><strong>{formatPercent(stats.winRatio)}</strong></span>
-            <span><small>Śr. zwrot rocznie</small><strong className={gainTone(stats.annualizedReturn)}>{formatPercent(stats.annualizedReturn, true)}</strong></span>
+            <span><small>Śr. zwrot rocznie</small><strong className={gainTone(investor.annualizedReturn)}>{formatPercent(investor.annualizedReturn, true)}</strong></span>
             <span>
               <small>Miejsce wśród Popularnych Inwestorów (rok)</small>
               <strong>
-                {stats.rankPosition != null && stats.rankPoolSize != null
-                  ? `${stats.rankPosition}. z ${stats.rankPoolSize} (lepszy niż ${betterThanPct(stats.rankPosition, stats.rankPoolSize)}%)`
+                {investor.rankPosition != null && investor.rankPoolSize != null
+                  ? `${investor.rankPosition}. z ${investor.rankPoolSize} (lepszy niż ${betterThanPct(investor.rankPosition, investor.rankPoolSize)}%)`
                   : "—"}
               </strong>
             </span>
@@ -729,6 +731,7 @@ function FeedList({ posts, emptyLabel }: { posts: FeedPost[]; emptyLabel: string
             <div className="feed-post-heading">
               <strong>@{post.username}</strong>
               <time>{formatRecentMoment(post.createdAt)}</time>
+              <small className="feed-post-translated">tłumaczenie automatyczne</small>
             </div>
             <p>{truncateText(post.text, 240)}</p>
           </div>
@@ -847,7 +850,7 @@ function PortfolioDialog({
           <span><small>Otwarte pozycje</small><strong>{positions.length}</strong></span>
           <span><small>Instrumenty w portfelu</small><strong>{instrumentCount}</strong></span>
         </div>
-        <ExtendedStatsSection loading={extendedStatsLoading} error={extendedStatsError} stats={extendedStats} />
+        <ExtendedStatsSection investor={investor} loading={extendedStatsLoading} error={extendedStatsError} stats={extendedStats} />
         <section className="portfolio-recent" aria-labelledby="recent-trades-title">
           <div className="portfolio-recent-heading">
             <span>
@@ -1516,6 +1519,15 @@ export function Dashboard() {
                         <span><small>Od roku</small><b className={gainTone(investor?.gainYtd)}>{formatPercent(investor?.gainYtd, true)}</b></span>
                         <span><small>2 lata</small><b className={gainTone(investor?.gainTwoYears)}>{formatPercent(investor?.gainTwoYears, true)}</b></span>
                         <span><small>Aktywny od</small><b>{formatDateOnly(investor?.activeSince ?? null)}</b></span>
+                        <span><small>Śr. zwrot rocznie</small><b className={gainTone(investor?.annualizedReturn)}>{formatPercent(investor?.annualizedReturn, true)}</b></span>
+                        <span>
+                          <small>Miejsce wśród PI (rok)</small>
+                          <b>
+                            {investor?.rankPosition != null && investor?.rankPoolSize != null
+                              ? `${investor.rankPosition}. z ${investor.rankPoolSize}`
+                              : "—"}
+                          </b>
+                        </span>
                       </div>
                     </button>
                     <div className="event-main">
