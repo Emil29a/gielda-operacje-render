@@ -151,5 +151,4 @@ export type InvestorExtendedStats = {
   rankPoolSize: number | null;
   userPosts: FeedPost[];
   instrumentPosts: FeedPost[];
-  newsPosts: FeedPost[];
 };

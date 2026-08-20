@@ -648,7 +648,7 @@ function toFeedPosts(result: PromiseSettledResult<RawFeedResponse>): FeedPost[] 
 }
 
 export async function fetchInvestorExtendedStats(username: string, cid: number): Promise<InvestorExtendedStats> {
-  const [rankingResult, monthlyResult, yearlyResult, exposureResult, assetsResult, userPostsResult, newsPostsResult] = await Promise.allSettled([
+  const [rankingResult, monthlyResult, yearlyResult, exposureResult, assetsResult, userPostsResult] = await Promise.allSettled([
     etoroRequest<{
       data?: {
         gain?: number;
@@ -681,10 +681,18 @@ export async function fetchInvestorExtendedStats(username: string, cid: number):
       }>;
     }>(`/api/v2/portfolios/${encodeURIComponent(username)}/assets/history?period=OneMonthAgo`),
     etoroRequest<RawFeedResponse>(`/api/v1/feeds/user/${cid}?take=5`),
-    etoroRequest<RawFeedResponse>(`/api/v1/feeds/news?take=5`),
   ]);
 
-  const ranking = rankingResult.status === "fulfilled" ? rankingResult.value.data ?? null : null;
+  // rankings is the primary source for almost the entire scalar grid — if it
+  // fails (rate limit, transient 5xx, etc.) there's no point returning a
+  // payload of all-null fields that silently renders as a wall of "—" with
+  // no indication anything went wrong. Fail loud instead so the dialog shows
+  // a real error the user (and next debugging session) can actually see.
+  if (rankingResult.status === "rejected") {
+    const reason = rankingResult.reason;
+    throw reason instanceof Error ? reason : new Error(String(reason));
+  }
+  const ranking = rankingResult.value.data ?? null;
   // eToro returns gain history oldest-first; reversed here so both the
   // yearly and monthly chip rows read newest-first, matching the rest of
   // the dashboard's "most recent first" convention.
@@ -805,6 +813,5 @@ export async function fetchInvestorExtendedStats(username: string, cid: number):
     rankPoolSize,
     userPosts: toFeedPosts(userPostsResult),
     instrumentPosts,
-    newsPosts: toFeedPosts(newsPostsResult),
   };
 }

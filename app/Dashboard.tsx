@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AssetAllocationSeries, CurrentPortfolioPosition, DashboardPayload, ExposurePoint, FeedPost, GainPoint, Investor, InvestorExtendedStats, TradeEvent } from "../lib/types";
+import { consolidatePositions } from "../lib/portfolio";
+import { betterThanPct } from "../lib/format";
 import {
   formatWarsawMoment,
   isWeekendDateKey,
@@ -10,57 +12,6 @@ import {
   shiftDateKey,
   warsawDateKey,
 } from "../lib/time";
-
-type ConsolidatedPosition = CurrentPortfolioPosition & { mergedCount: number; firstOpenTimestamp: string };
-
-// Same instrument, same direction (long vs short kept separate — merging
-// them would hide a hedge as if it netted out) gets combined into one row:
-// average entry price and average return weighted by each position's
-// portfolio share (investmentPct) — the standard "average cost / weighted
-// return" a broker's own portfolio view shows, rather than every single
-// trade listed as its own line.
-function consolidatePositions(positions: CurrentPortfolioPosition[]): ConsolidatedPosition[] {
-  const groups = new Map<string, CurrentPortfolioPosition[]>();
-  for (const position of positions) {
-    const key = `${position.instrumentId}:${position.isBuy}`;
-    const list = groups.get(key);
-    if (list) list.push(position);
-    else groups.set(key, [position]);
-  }
-  const consolidated = [...groups.values()].map((group) => {
-    if (group.length === 1) return { ...group[0], mergedCount: 1, firstOpenTimestamp: group[0].openTimestamp };
-    const weightOf = (position: CurrentPortfolioPosition) => position.investmentPct ?? 1;
-    const weightedAverage = (getValue: (position: CurrentPortfolioPosition) => number | null) => {
-      let weightedSum = 0;
-      let weightTotal = 0;
-      for (const position of group) {
-        const value = getValue(position);
-        if (value == null) continue;
-        const weight = weightOf(position);
-        weightedSum += value * weight;
-        weightTotal += weight;
-      }
-      return weightTotal > 0 ? weightedSum / weightTotal : null;
-    };
-    const totalInvestmentPct = group.reduce((sum, position) => sum + (position.investmentPct ?? 0), 0);
-    const newestOpen = group.reduce((latest, position) =>
-      new Date(position.openTimestamp) > new Date(latest.openTimestamp) ? position : latest);
-    const oldestOpen = group.reduce((earliest, position) =>
-      new Date(position.openTimestamp) < new Date(earliest.openTimestamp) ? position : earliest);
-    return {
-      ...group[0],
-      positionId: group.map((position) => position.positionId).join(","),
-      openTimestamp: newestOpen.openTimestamp,
-      firstOpenTimestamp: oldestOpen.openTimestamp,
-      openRate: weightedAverage((position) => position.openRate),
-      netProfit: weightedAverage((position) => position.netProfit),
-      investmentPct: totalInvestmentPct || null,
-      mergedCount: group.length,
-    };
-  });
-  consolidated.sort((a, b) => new Date(b.openTimestamp).getTime() - new Date(a.openTimestamp).getTime());
-  return consolidated;
-}
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, { cache: "no-store", ...init });
@@ -693,7 +644,7 @@ function ExtendedStatsSection({
               <small>Miejsce wśród PI wg zysku (rok)</small>
               <strong>
                 {stats.rankPosition != null && stats.rankPoolSize != null
-                  ? `${stats.rankPosition}. z ${stats.rankPoolSize} (lepszy niż ${Math.max(0, Math.round((1 - stats.rankPosition / stats.rankPoolSize) * 100))}% PI)`
+                  ? `${stats.rankPosition}. z ${stats.rankPoolSize} (lepszy niż ${betterThanPct(stats.rankPosition, stats.rankPoolSize)}% PI)`
                   : "—"}
               </strong>
             </span>
@@ -765,8 +716,8 @@ function FeedList({ posts, emptyLabel }: { posts: FeedPost[]; emptyLabel: string
 function FeedsSection({ stats, topInstrumentSymbol }: { stats: InvestorExtendedStats | null; topInstrumentSymbol: string | null }) {
   if (!stats) return null;
   return (
-    <section className="extended-stats-feeds" aria-label="Posty i newsy">
-      <span className="section-kicker">Posty i newsy eToro</span>
+    <section className="extended-stats-feeds" aria-label="Posty">
+      <span className="section-kicker">Posty eToro</span>
       <div className="extended-stats-feeds-grid">
         <div>
           <small>Posty inwestora</small>
@@ -775,10 +726,6 @@ function FeedsSection({ stats, topInstrumentSymbol }: { stats: InvestorExtendedS
         <div>
           <small>Dyskusja: {topInstrumentSymbol ?? "najczęściej handlowany instrument"}</small>
           <FeedList posts={stats.instrumentPosts} emptyLabel="Brak postów na temat tego instrumentu." />
-        </div>
-        <div>
-          <small>Newsy rynkowe</small>
-          <FeedList posts={stats.newsPosts} emptyLabel="Brak dostępnych newsów." />
         </div>
       </div>
     </section>
@@ -1126,6 +1073,7 @@ export function Dashboard() {
   const [data, setData] = useState<DashboardPayload | null>(null);
   const [dataLoadedAt, setDataLoadedAt] = useState<string | null>(null);
   const [selectedInvestor, setSelectedInvestor] = useState("all");
+  const [investorSort, setInvestorSort] = useState<"slot" | "gain" | "risk" | "activity">("slot");
   const [portfolioUsername, setPortfolioUsername] = useState<string | null>(null);
   const [recentTrades, setRecentTrades] = useState<TradeEvent[]>([]);
   const [livePositions, setLivePositions] = useState<CurrentPortfolioPosition[]>([]);
@@ -1236,6 +1184,15 @@ export function Dashboard() {
     [data?.events, selectedInvestor],
   );
   const groupedVisibleEvents = useMemo(() => groupTradeEvents(visibleEvents), [visibleEvents]);
+  const sortedInvestors = useMemo(() => {
+    const investors = data?.investors ?? [];
+    if (investorSort === "slot") return investors;
+    const sorted = [...investors];
+    if (investorSort === "gain") sorted.sort((a, b) => (b.gainYtd ?? -Infinity) - (a.gainYtd ?? -Infinity));
+    else if (investorSort === "risk") sorted.sort((a, b) => (a.riskScore ?? Infinity) - (b.riskScore ?? Infinity));
+    else if (investorSort === "activity") sorted.sort((a, b) => (b.openPositions ?? 0) - (a.openPositions ?? 0));
+    return sorted;
+  }, [data?.investors, investorSort]);
   const openedCount = groupedVisibleEvents.filter((group) => group.representative.eventType === "OPEN").length;
   const closedCount = groupedVisibleEvents.filter((group) => group.representative.eventType === "CLOSE").length;
   const shortCount = groupedVisibleEvents.filter((group) => !group.representative.isBuy).length;
@@ -1581,16 +1538,22 @@ export function Dashboard() {
       <section className="investors-section" aria-labelledby="investors-title">
         <div className="section-heading">
           <div><span className="section-kicker">Profile i wyniki</span><h2 id="investors-title">Obserwowani inwestorzy{data?.investors.length ? ` (${data.investors.length})` : ""}</h2></div>
+          <div className="sort-controls" role="group" aria-label="Sortowanie inwestorów">
+            <button type="button" className={investorSort === "slot" ? "active" : ""} onClick={() => setInvestorSort("slot")}>Domyślnie</button>
+            <button type="button" className={investorSort === "gain" ? "active" : ""} onClick={() => setInvestorSort("gain")}>Zysk (rok)</button>
+            <button type="button" className={investorSort === "risk" ? "active" : ""} onClick={() => setInvestorSort("risk")}>Ryzyko</button>
+            <button type="button" className={investorSort === "activity" ? "active" : ""} onClick={() => setInvestorSort("activity")}>Aktywność</button>
+          </div>
         </div>
         <div className="investor-grid">
-          {data?.investors.map((investor) => (
+          {data?.investors.length ? sortedInvestors.map((investor) => (
             <InvestorCard
               key={investor.username}
               investor={investor}
               selected={selectedInvestor === investor.username}
               onOpenPortfolio={() => setPortfolioUsername(investor.username)}
             />
-          )) ?? [1, 2, 3].map((value) => <div className="card-loading" key={value} />)}
+          )) : [1, 2, 3].map((value) => <div className="card-loading" key={value} />)}
         </div>
         <p className="returns-note">
           Stopy zwrotu są wartościami pola <code>gain</code> zwróconymi przez eToro:

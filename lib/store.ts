@@ -327,9 +327,15 @@ function buildEventStatement(
 // "did anything change" check and the UPDATE event's note text, so the
 // journal can say specifically what happened instead of just "zmienił
 // pozycję" with no further detail.
-function describeChange(previous: PositionRow, current: PortfolioPosition): string | null {
-  const diff = (a: number | null, b: number | null, tolerance = 0.01) =>
-    a != null && b != null && Math.abs(a - b) >= tolerance;
+export function describeChange(previous: PositionRow, current: PortfolioPosition): string | null {
+  // A field going from unset to set (or vice versa) — e.g. a take-profit
+  // being added or removed — is itself a real change, not something to
+  // silently ignore just because only one side has a number to diff against.
+  const diff = (a: number | null, b: number | null, tolerance = 0.01) => {
+    if (a == null && b == null) return false;
+    if (a == null || b == null) return true;
+    return Math.abs(a - b) >= tolerance;
+  };
   const formatPct = (value: number | null) => value == null ? "—" : `${value.toFixed(2)}%`;
   const formatLeverage = (value: number | null) => value == null ? "—" : `${value % 1 === 0 ? value.toFixed(0) : value.toFixed(2)}x`;
   const formatRate = (value: number | null) => value == null ? "brak" : value.toFixed(4);

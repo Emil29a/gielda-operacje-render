@@ -10,6 +10,7 @@
     "build": "vinext build",
     "start": "tsx start.mjs",
     "test": "npm run build && node --test tests/rendered-html.test.mjs",
+    "test:unit": "node --import tsx --test tests/unit/*.test.ts",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate",
     "dev:vinext": "vinext dev --port 3001",
