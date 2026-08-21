@@ -109,6 +109,9 @@ export async function ensureSchema() {
   if (!columnNames.has("rank_pool_size")) {
     additions.push(d1.prepare("ALTER TABLE tracked_investors ADD COLUMN rank_pool_size INTEGER"));
   }
+  if (!columnNames.has("five_year_gain")) {
+    additions.push(d1.prepare("ALTER TABLE tracked_investors ADD COLUMN five_year_gain REAL"));
+  }
   if (additions.length) await d1.batch(additions);
 
   const positionColumns = await d1
@@ -133,14 +136,14 @@ export async function listInvestors(): Promise<Investor[]> {
       `SELECT i.slot, i.username, i.cid, i.full_name, i.avatar_url,
         i.risk_score, i.daily_gain, i.gain_ytd, i.gain_two_years,
         i.copiers, i.updated_at, i.active_since,
-        i.annualized_return, i.rank_position, i.rank_pool_size,
+        i.annualized_return, i.rank_position, i.rank_pool_size, i.five_year_gain,
         COUNT(p.position_id) AS open_positions
       FROM tracked_investors i
       LEFT JOIN current_positions p ON p.username = i.username
       GROUP BY i.slot, i.username, i.cid, i.full_name, i.avatar_url,
         i.risk_score, i.daily_gain, i.gain_ytd, i.gain_two_years,
         i.copiers, i.updated_at, i.active_since,
-        i.annualized_return, i.rank_position, i.rank_pool_size
+        i.annualized_return, i.rank_position, i.rank_pool_size, i.five_year_gain
       ORDER BY i.slot`,
     )
     .all<Record<string, unknown>>();
@@ -158,6 +161,7 @@ export async function listInvestors(): Promise<Investor[]> {
     updatedAt: String(row.updated_at),
     activeSince: row.active_since ? String(row.active_since) : null,
     annualizedReturn: row.annualized_return == null ? null : Number(row.annualized_return),
+    fiveYearGain: row.five_year_gain == null ? null : Number(row.five_year_gain),
     rankPosition: row.rank_position == null ? null : Number(row.rank_position),
     rankPoolSize: row.rank_pool_size == null ? null : Number(row.rank_pool_size),
     openPositions: Number(row.open_positions ?? 0),
@@ -184,8 +188,8 @@ export async function replaceInvestors(investors: Investor[], clearHistory = fal
           `INSERT INTO tracked_investors
           (slot, username, cid, full_name, avatar_url, risk_score, daily_gain,
            gain_ytd, gain_two_years, copiers, updated_at, active_since,
-           annualized_return, rank_position, rank_pool_size)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           annualized_return, rank_position, rank_pool_size, five_year_gain)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .bind(
           index + 1,
@@ -203,6 +207,7 @@ export async function replaceInvestors(investors: Investor[], clearHistory = fal
           investor.annualizedReturn ?? null,
           investor.rankPosition ?? null,
           investor.rankPoolSize ?? null,
+          investor.fiveYearGain ?? null,
         ),
     ),
   );
@@ -235,7 +240,8 @@ export async function updateInvestors(investors: Investor[]) {
               active_since = COALESCE(?, active_since),
               annualized_return = COALESCE(?, annualized_return),
               rank_position = COALESCE(?, rank_position),
-              rank_pool_size = COALESCE(?, rank_pool_size)
+              rank_pool_size = COALESCE(?, rank_pool_size),
+              five_year_gain = COALESCE(?, five_year_gain)
           WHERE LOWER(username) = LOWER(?)`,
         )
         .bind(
@@ -252,6 +258,7 @@ export async function updateInvestors(investors: Investor[]) {
           investor.annualizedReturn ?? null,
           investor.rankPosition ?? null,
           investor.rankPoolSize ?? null,
+          investor.fiveYearGain ?? null,
           investor.username,
         ),
     ),

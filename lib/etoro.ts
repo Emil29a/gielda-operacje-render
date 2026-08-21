@@ -187,11 +187,22 @@ export async function resolveInvestorIdentities(usernames: string[], slotOffset 
         updatedAt: new Date().toISOString(),
         activeSince: null,
         annualizedReturn: null,
+        fiveYearGain: null,
         rankPosition: null,
         rankPoolSize: null,
       };
     },
   );
+}
+
+// Compounds a "since inception" return from monthly gain-history entries —
+// e.g. +10% then -10% nets to -1%, not 0%, so this multiplies growth
+// factors rather than summing percentages. Used as a fallback for
+// fiveYearGain on accounts too young for eToro's own 5-year figure.
+function compoundMonthlyGains(monthly: Array<{ gain?: number }>): number | null {
+  if (!monthly.length) return null;
+  const factor = monthly.reduce((acc, month) => acc * (1 + (month.gain ?? 0) / 100), 1);
+  return (factor - 1) * 100;
 }
 
 export async function resolveInvestors(usernames: string[], slotOffset = 0): Promise<Investor[]> {
@@ -227,15 +238,23 @@ export async function resolveInvestors(usernames: string[], slotOffset = 0): Pro
       // the earliest entry in this investor's full monthly gain history —
       // its timestamp lines up exactly with the real "active since" date
       // shown on eToro's own profile pages.
-      const [currentYear, lastTwoYears, gainHistory, rankingRow] = await Promise.all([
+      //
+      // findExactRank's list-scan (see that function) already returns
+      // annualizedReturn/fiveYearGain for free from the matched row, so
+      // that's the primary source now instead of a dedicated per-investor
+      // request — computed here alongside the others, not after, so the
+      // rank lookup's own sequential paging overlaps with these instead of
+      // adding to the total wait. The dedicated per-investor rankings
+      // request only still runs as a fallback, for the rare investor
+      // findExactRank can't find in the copiersMin pool at all (e.g.
+      // leszekfx, with too few copiers to appear in it).
+      const [currentYear, lastTwoYears, gainHistory, rank] = await Promise.all([
         etoroRequest<TradeInfo>(`${tradeInfoPath}?period=CurrYear`),
         etoroRequest<TradeInfo>(`${tradeInfoPath}?period=LastTwoYears`),
-        etoroRequest<{ monthly?: Array<{ timestamp: string }> }>(
+        etoroRequest<{ monthly?: Array<{ timestamp: string; gain?: number }> }>(
           `/api/v1/user-info/people/${encodeURIComponent(username)}/gain`,
         ).catch(() => ({ monthly: [] })),
-        etoroRequest<{ data?: { gain?: number; annualizedReturn?: number } }>(
-          `/api/v2/portfolios/${encodeURIComponent(username)}/rankings?period=LastYear`,
-        ).catch(() => null),
+        findExactRank(username),
       ]);
       if (!currentYear.isPopularInvestor) {
         throw new Error(`@${username} nie jest obecnie oznaczony jako Popular Investor.`);
@@ -247,10 +266,19 @@ export async function resolveInvestors(usernames: string[], slotOffset = 0): Pro
       const avatar = originalAvatar?.url || avatars.sort(
         (a, b) => (b.width ?? 0) - (a.width ?? 0),
       )[0]?.url;
-      // Verified list-membership rank (see findExactRank) — computed here
-      // gradually, so the journal can show it inline per event without
-      // needing a live fetch for every investor mentioned that day.
-      const rank = await findExactRank(username);
+      let annualizedReturn = rank?.annualizedReturn ?? null;
+      // Real 5-year figure when the account is old enough for eToro to give
+      // one (see findExactRank); otherwise, compounding the same monthly
+      // gain history already fetched for activeSince gives an honest
+      // "return since this account started" number instead of just "—" —
+      // exactly what a 5-year figure degrades to for a younger account.
+      const fiveYearGain = rank?.fiveYearGain ?? compoundMonthlyGains(gainHistory.monthly);
+      if (rank == null) {
+        const rankingRow = await etoroRequest<{ data?: { annualizedReturn?: number } }>(
+          `/api/v2/portfolios/${encodeURIComponent(username)}/rankings?period=LastYear`,
+        ).catch(() => null);
+        annualizedReturn = rankingRow?.data?.annualizedReturn != null ? rankingRow.data.annualizedReturn * 100 : null;
+      }
       return {
         slot: slotOffset + index + 1,
         username: profile.username,
@@ -264,7 +292,8 @@ export async function resolveInvestors(usernames: string[], slotOffset = 0): Pro
         copiers: currentYear.copiers ?? null,
         updatedAt: new Date().toISOString(),
         activeSince: gainHistory.monthly?.[0]?.timestamp ?? null,
-        annualizedReturn: rankingRow?.data?.annualizedReturn != null ? rankingRow.data.annualizedReturn * 100 : null,
+        annualizedReturn,
+        fiveYearGain,
         rankPosition: rank?.position ?? null,
         rankPoolSize: rank?.poolSize ?? null,
       };
@@ -747,7 +776,13 @@ async function hydrateFeedPosts(posts: FeedPost[]): Promise<FeedPost[]> {
 
 const RANK_PAGE_SIZE = 100;
 
-type RankRow = { username: string; gain: number };
+type RankRow = {
+  username: string;
+  gain: number;
+  annualizedReturn: number | null;
+  fiveYearGain: number | null;
+  weeksSinceRegistration: number | null;
+};
 
 // popularInvestor=true only ever covers 566 accounts — eToro's own
 // complete "official PI" cohort, confirmed fixed across every period and
@@ -764,11 +799,23 @@ const RANK_COPIERS_MIN = 7;
 
 export async function fetchRankPage(page: number): Promise<{ rows: RankRow[]; totalItems: number | null }> {
   const data = await etoroRequest<{
-    results?: Array<{ username?: string; gain?: number }>;
+    results?: Array<{
+      username?: string;
+      gain?: number;
+      annualizedReturn?: number;
+      fiveYearGain?: number;
+      weeksSinceRegistration?: number;
+    }>;
     pagination?: { totalItems?: number };
   }>(`/api/v2/portfolios/rankings?period=LastYear&sort=-gain&copiersMin=${RANK_COPIERS_MIN}&pageSize=${RANK_PAGE_SIZE}&page=${page}`);
   return {
-    rows: (data.results ?? []).flatMap((row) => row.username ? [{ username: row.username, gain: row.gain ?? 0 }] : []),
+    rows: (data.results ?? []).flatMap((row) => row.username ? [{
+      username: row.username,
+      gain: row.gain ?? 0,
+      annualizedReturn: row.annualizedReturn != null ? row.annualizedReturn * 100 : null,
+      fiveYearGain: row.fiveYearGain != null ? row.fiveYearGain * 100 : null,
+      weeksSinceRegistration: row.weeksSinceRegistration ?? null,
+    }] : []),
     totalItems: data.pagination?.totalItems ?? null,
   };
 }
@@ -794,10 +841,19 @@ export async function fetchRankPage(page: number): Promise<{ rows: RankRow[]; to
 // a burst of page requests is exactly the pattern that has tripped eToro's
 // rate limiter before. `getPage` is injectable for unit testing against a
 // fake in-memory pool.
+//
+// The matched row is returned too (annualizedReturn, fiveYearGain) — this
+// scan already fetches that data for free, so resolveInvestors can skip a
+// dedicated per-investor request for annualizedReturn. fiveYearGain is
+// nulled out for accounts under 5 years old (weeksSinceRegistration < 260):
+// verified directly that eToro still returns *some* fiveYearGain value for
+// a 12-week-old account rather than leaving it blank, so age is the only
+// way to tell a real figure from a meaningless one for a short-lived
+// account.
 export async function findExactRank(
   username: string,
   getPage: (page: number) => Promise<{ rows: RankRow[]; totalItems: number | null }> = fetchRankPage,
-): Promise<{ position: number; poolSize: number } | null> {
+): Promise<{ position: number; poolSize: number; annualizedReturn: number | null; fiveYearGain: number | null } | null> {
   const target = username.toLowerCase();
   const first = await getPage(1).catch(() => null);
   if (!first || first.totalItems == null) return null;
@@ -805,15 +861,21 @@ export async function findExactRank(
   const totalPages = Math.ceil(poolSize / RANK_PAGE_SIZE);
 
   const indexOf = (rows: RankRow[]) => rows.findIndex((row) => row.username.toLowerCase() === target);
+  const toResult = (row: RankRow, position: number) => ({
+    position,
+    poolSize,
+    annualizedReturn: row.annualizedReturn,
+    fiveYearGain: (row.weeksSinceRegistration ?? 0) >= 260 ? row.fiveYearGain : null,
+  });
 
   const foundOnFirst = indexOf(first.rows);
-  if (foundOnFirst !== -1) return { position: foundOnFirst + 1, poolSize };
+  if (foundOnFirst !== -1) return toResult(first.rows[foundOnFirst], foundOnFirst + 1);
 
   for (let page = 2; page <= totalPages; page++) {
     const data = await getPage(page).catch(() => null);
     if (!data) continue;
     const index = indexOf(data.rows);
-    if (index !== -1) return { position: (page - 1) * RANK_PAGE_SIZE + index + 1, poolSize };
+    if (index !== -1) return toResult(data.rows[index], (page - 1) * RANK_PAGE_SIZE + index + 1);
   }
   return null;
 }

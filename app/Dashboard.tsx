@@ -1796,10 +1796,14 @@ export function Dashboard() {
   const daySummary = useMemo(() => {
     const summaries = new Map<string, DaySummary>();
     for (const event of data?.events ?? []) {
-      const action = !event.isBuy
-        ? event.eventType === "OPEN" ? "SHORT_OPEN" : event.eventType === "CLOSE" ? "SHORT_CLOSE" : "SHORT_UPDATE"
-        : event.eventType;
-      const key = `${event.instrumentId}:${action}`;
+      // "W skrócie" is meant as a fast read of real buy/sell activity —
+      // stop-loss/take-profit tweaks (UPDATE) and shorts add noise without
+      // adding much signal there, so they're left out of the summary cards
+      // entirely. They're not hidden from the app: the full event list
+      // right below still shows them, just visually toned down (see
+      // event-badge.update/.short styling).
+      if (event.eventType === "UPDATE" || !event.isBuy) continue;
+      const key = `${event.instrumentId}:${event.eventType}`;
       const summary = summaries.get(key);
       if (summary) {
         summary.investors.add(event.username.toLowerCase());
@@ -2059,8 +2063,9 @@ export function Dashboard() {
                 const investor = data?.investors.find(
                   (current) => current.username.toLowerCase() === event.username.toLowerCase(),
                 );
+                const isSecondary = event.eventType === "UPDATE" || !event.isBuy;
                 return (
-                  <article className="event-row" key={key}>
+                  <article className={`event-row ${isSecondary ? "is-secondary" : ""}`} key={key}>
                     <time dateTime={event.occurredAt}>
                       <strong>{formatTime(event.occurredAt, true)}</strong>
                       <small>{event.precision === "exact" ? "transakcja" : "wykrycie"}</small>

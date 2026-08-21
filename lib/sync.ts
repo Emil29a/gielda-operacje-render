@@ -213,7 +213,7 @@ export async function synchronizePositionsOnly() {
     // expensive step, so it stays smallest and last.
     const missingStats = investors.filter(
       (investor) => investor.cid !== 0
-        && (investor.gainYtd == null || investor.activeSince == null || investor.rankPosition == null),
+        && (investor.gainYtd == null || investor.activeSince == null || investor.rankPosition == null || investor.fiveYearGain == null),
     ).slice(0, FULL_PROFILE_BATCH_LIMIT);
     if (missingStats.length) {
       const resolved = await resolvePaced(

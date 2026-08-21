@@ -12,6 +12,7 @@ export type Investor = {
   updatedAt: string;
   activeSince: string | null;
   annualizedReturn: number | null;
+  fiveYearGain: number | null;
   rankPosition: number | null;
   rankPoolSize: number | null;
   openPositions?: number;

@@ -284,6 +284,28 @@ section.recent-activity-summary { margin: 12px auto 0; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .event-row { min-height: 78px; display: grid; grid-template-columns: 56px 30px minmax(155px, .72fr) minmax(190px, 1fr) minmax(140px, .72fr); gap: 10px; align-items: center; padding: 9px 13px; border-bottom: 1px solid var(--line); }
 .event-row:last-child { border-bottom: 0; }
+/* Stop-loss/take-profit tweaks and shorts are kept in the journal (never
+   hidden) but read as background noise next to real buy/sell activity, so
+   the row itself is simply shorter/denser than a real trade — no opacity
+   or hover animation, just a smaller static footprint. */
+.event-row.is-secondary { min-height: 0; grid-template-columns: 56px 22px minmax(0, .72fr) minmax(0, 1fr); padding-top: 4px; padding-bottom: 4px; }
+.event-row.is-secondary time strong, .event-row.is-secondary time small { color: var(--muted); }
+.event-row.is-secondary .event-icon { width: 18px; height: 18px; font-size: 8px; }
+.event-row.is-secondary .event-icon svg { width: 11px; height: 11px; }
+.event-row.is-secondary .event-badge { padding: 1px 4px; font-size: 7px; }
+.event-row.is-secondary .event-title .instrument-logo { width: 17px; height: 17px; }
+.event-row.is-secondary .event-title strong { font-size: 10px; }
+.event-row.is-secondary .event-title > span:not(.event-badge) { font-size: 9px; }
+.event-row.is-secondary .event-performance,
+.event-row.is-secondary .position-return,
+.event-row.is-secondary .price-movement { display: none; }
+/* event-details' first line is the actual "what changed" text (e.g. a
+   stop-loss move) — the one thing worth keeping legible on an otherwise
+   compacted UPDATE/short row. The rest (exchange/instrument id, % of
+   portfolio, merge note) is dropped along with everything else. */
+.event-row.is-secondary .event-details { gap: 0; }
+.event-row.is-secondary .event-details > *:not(:first-child) { display: none; }
+.event-row.is-secondary .event-details > :first-child { font-size: 10px; }
 .event-row time { display: grid; gap: 2px; font-family: var(--font-geist-mono), monospace; color: var(--muted); }
 .event-row time strong { color: var(--ink); font-size: 12px; font-weight: 750; }
 .event-row time small { font-size: 8px; text-transform: uppercase; letter-spacing: .06em; }
