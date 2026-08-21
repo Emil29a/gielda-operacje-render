@@ -606,9 +606,19 @@ export async function findKnownInstruments(
   for (const row of rowSets.flatMap((rowSet) => rowSet.results)) {
     const instrumentId = Number(row.instrument_id);
     if (result.has(instrumentId)) continue;
+    const symbol = String(row.symbol);
+    const displayName = String(row.display_name);
+    // A row can itself carry the "#id" / "Instrument id" placeholder — sync
+    // wrote it that way at the time because a live lookup failed then (rate
+    // limit, transient error). Treating that placeholder as "known good"
+    // would permanently poison fetchInstruments' D1 cache with it (it's
+    // cached indefinitely once found "known"), so any instrument whose only
+    // stored occurrences are placeholders is skipped here and falls through
+    // to a real live lookup instead.
+    if (symbol === `#${instrumentId}` && displayName === `Instrument ${instrumentId}`) continue;
     result.set(instrumentId, {
-      symbol: String(row.symbol),
-      displayName: String(row.display_name),
+      symbol,
+      displayName,
       exchangeId: row.exchange_id == null ? null : Number(row.exchange_id),
       exchangeName: row.exchange_name == null ? null : String(row.exchange_name),
     });
