@@ -448,69 +448,6 @@ function summaryAction(event: TradeEvent) {
   return { label: "Zmiana", tone: "update" };
 }
 
-function InvestorCard({
-  investor,
-  selected,
-  onOpenPortfolio,
-}: {
-  investor: Investor;
-  selected: boolean;
-  onOpenPortfolio: () => void;
-}) {
-  const gainClass = (investor.dailyGain ?? 0) >= 0 ? "positive" : "negative";
-  return (
-    <article className={`investor-card ${selected ? "selected" : ""}`}>
-      <button className="investor-main" type="button" onClick={onOpenPortfolio} aria-label={`Otwórz aktualny portfel ${investor.fullName}`}>
-        <span className={`avatar avatar-${investor.slot}`}>
-          {investor.avatarUrl ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={investor.avatarUrl} alt={`Zdjęcie ${investor.fullName}`} />
-          ) : <span aria-hidden="true">{initials(investor.username)}</span>}
-        </span>
-        <span className="investor-title">
-          <span className="eyebrow">Inwestor {String(investor.slot).padStart(2, "0")}</span>
-          <strong>@{investor.username}</strong>
-          <span>{investor.fullName}</span>
-        </span>
-        <span className={`daily-gain ${gainClass}`}>
-          {formatPercent(investor.dailyGain, true)}
-          <small>ostatni dzień</small>
-        </span>
-      </button>
-      <div className="investor-returns" aria-label={`Stopy zwrotu ${investor.fullName} według eToro`}>
-        <span>
-          <small>Od początku roku</small>
-          <strong className={gainTone(investor.gainYtd)}>{formatPercent(investor.gainYtd, true)}</strong>
-        </span>
-        <span>
-          <small>Ostatnie 2 lata</small>
-          <strong className={gainTone(investor.gainTwoYears)}>{formatPercent(investor.gainTwoYears, true)}</strong>
-        </span>
-      </div>
-      <div className="investor-stats">
-        <span><small>Ryzyko</small><strong>{formatNumber(investor.riskScore)}/10</strong></span>
-        <span><small>Otwarte</small><strong>{investor.openPositions ?? 0}</strong></span>
-        <span><small>Liczba kopiujących</small><strong>{formatNumber(investor.copiers)}</strong></span>
-        <span><small>Aktywny od</small><strong>{formatDateOnly(investor.activeSince)}</strong></span>
-        <span>
-          <small>Miejsce wśród PI</small>
-          <strong>{investor.rankPosition != null && investor.rankPoolSize != null ? `${investor.rankPosition}. z ${investor.rankPoolSize}` : "—"}</strong>
-        </span>
-      </div>
-      <div className="investor-actions">
-        <button type="button" onClick={onOpenPortfolio}>Zobacz portfel</button>
-        <a
-          href={`https://www.etoro.com/pl/people/${encodeURIComponent(investor.username)}`}
-          target="_blank"
-          rel="noreferrer"
-        >
-          Profil ↗
-        </a>
-      </div>
-    </article>
-  );
-}
-
 function YearlyGainChart({ points }: { points: GainPoint[] }) {
   if (!points.length) return <span className="chart-empty">brak danych</span>;
   const maxAbs = Math.max(...points.map((point) => Math.abs(point.gain)), 1);
@@ -1062,10 +999,18 @@ function RecentActivitySection({
       .filter((group) => group.people.length > 0)
       .filter((group) => !query
         || group.symbol.toLocaleLowerCase("pl").includes(query)
-        || group.displayName.toLocaleLowerCase("pl").includes(query));
+        || group.displayName.toLocaleLowerCase("pl").includes(query))
+      // The API sorts by people.length before this filter runs, so removing
+      // people to match the quality toggle can leave groups in an order
+      // that no longer matches their (now smaller) counts — re-sort after.
+      .sort((a, b) => b.people.length - a.people.length || a.displayName.localeCompare(b.displayName, "pl"));
   }, [data?.groups, filterQuery, qualityView, qualityByUsername]);
 
   const scroll = useScrollAvailability(stripRef, visibleGroups.length);
+
+  useEffect(() => {
+    stripRef.current?.scrollTo({ left: 0, behavior: "auto" });
+  }, [qualityView]);
 
   const scrollThisStrip = (direction: -1 | 1) => {
     const container = stripRef.current;
@@ -1717,8 +1662,6 @@ export function Dashboard() {
   const [selectedDate, setSelectedDate] = useState(() => warsawDateKey());
   const [data, setData] = useState<DashboardPayload | null>(null);
   const [dataLoadedAt, setDataLoadedAt] = useState<string | null>(null);
-  const [selectedInvestor, setSelectedInvestor] = useState("all");
-  const [investorSort, setInvestorSort] = useState<"slot" | "gain" | "risk" | "activity">("gain");
   const [qualityView, setQualityView] = useState<"all" | "pass" | "fail">("pass");
   const [qualityData, setQualityData] = useState<InvestorQualityPayload | null>(null);
   const [qualityLoading, setQualityLoading] = useState(true);
@@ -1734,7 +1677,6 @@ export function Dashboard() {
   const [error, setError] = useState("");
   const activeLoad = useRef<AbortController | null>(null);
   const skipNextDateLoad = useRef(false);
-  const investorStripRef = useRef<HTMLDivElement | null>(null);
   const companyStripRef = useRef<HTMLDivElement | null>(null);
   const activeRecentTradesLoad = useRef<AbortController | null>(null);
 
@@ -1796,13 +1738,13 @@ export function Dashboard() {
 
   useEffect(() => {
     companyStripRef.current?.scrollTo({ left: 0, behavior: "auto" });
-  }, [selectedDate]);
+  }, [selectedDate, qualityView]);
 
   useEffect(() => {
     // Once the load for the new date lands, the list is replaced and the
     // browser's scroll-anchoring can silently drag scrollLeft away from 0.
     if (!busy) companyStripRef.current?.scrollTo({ left: 0, behavior: "auto" });
-  }, [busy, selectedDate]);
+  }, [busy, selectedDate, qualityView]);
 
   const loadRecentTrades = useCallback(async (username: string) => {
     activeRecentTradesLoad.current?.abort();
@@ -1846,31 +1788,21 @@ export function Dashboard() {
   }, [qualityData]);
   const visibleEvents = useMemo(
     () => (data?.events ?? []).filter((event) => {
-      if (selectedInvestor !== "all" && event.username !== selectedInvestor) return false;
       if (qualityView !== "all") {
         const result = qualityByUsername.get(event.username.toLowerCase());
         if (!result || result.meetsCriteria !== (qualityView === "pass")) return false;
       }
       return true;
     }),
-    [data?.events, selectedInvestor, qualityView, qualityByUsername],
+    [data?.events, qualityView, qualityByUsername],
   );
   const groupedVisibleEvents = useMemo(() => groupTradeEvents(visibleEvents), [visibleEvents]);
-  const sortedInvestors = useMemo(() => {
-    const investors = data?.investors ?? [];
-    if (investorSort === "slot") return investors;
-    const sorted = [...investors];
-    if (investorSort === "gain") sorted.sort((a, b) => (b.gainYtd ?? -Infinity) - (a.gainYtd ?? -Infinity));
-    else if (investorSort === "risk") sorted.sort((a, b) => (a.riskScore ?? Infinity) - (b.riskScore ?? Infinity));
-    else if (investorSort === "activity") sorted.sort((a, b) => (b.openPositions ?? 0) - (a.openPositions ?? 0));
-    return sorted;
-  }, [data?.investors, investorSort]);
   const openedCount = groupedVisibleEvents.filter((group) => group.representative.eventType === "OPEN").length;
   const closedCount = groupedVisibleEvents.filter((group) => group.representative.eventType === "CLOSE").length;
   const shortCount = groupedVisibleEvents.filter((group) => !group.representative.isBuy).length;
   const daySummary = useMemo(() => {
     const summaries = new Map<string, DaySummary>();
-    for (const event of data?.events ?? []) {
+    for (const event of visibleEvents) {
       // "W skrócie" is meant as a fast read of real buy/sell activity —
       // stop-loss/take-profit tweaks (UPDATE) and shorts add noise without
       // adding much signal there, so they're left out of the summary cards
@@ -1901,7 +1833,7 @@ export function Dashboard() {
       || a.event.symbol.localeCompare(b.event.symbol, "pl")
       || a.event.eventType.localeCompare(b.event.eventType),
     );
-  }, [data?.events]);
+  }, [visibleEvents]);
   const selectedSummary = daySummary.find((summary) => summary.key === selectedSummaryKey) ?? null;
   const selectedSummaryPeople = selectedSummary
     ? [...selectedSummary.events.reduce((people, event) => {
@@ -1916,7 +1848,6 @@ export function Dashboard() {
         return (investorA?.fullName ?? a.username).localeCompare(investorB?.fullName ?? b.username, "pl");
       })
     : [];
-  const investorScroll = useScrollAvailability(investorStripRef, data?.investors.length ?? 0);
   const companyScroll = useScrollAvailability(companyStripRef, daySummary.length);
   const todayDate = warsawDateKey();
   const quickDates = useMemo(() => {
@@ -2008,7 +1939,6 @@ export function Dashboard() {
       // dashboard — whatever is already stored is still worth showing.
       setError(currentError instanceof Error ? currentError.message : "Błąd synchronizacji.");
     }
-    setSelectedInvestor("all");
     if (selectedDate !== currentDate) skipNextDateLoad.current = true;
     setSelectedDate(currentDate);
     setDateWindowEnd(currentDate);
@@ -2222,21 +2152,6 @@ export function Dashboard() {
           ) : <EmptyState date={selectedDate} configured={data?.mode === "live"} />}
           </div>
         </div>
-        <div className="scroll-strip-shell investor-filter-strip">
-          <button className={`strip-arrow ${investorScroll.left ? "" : "is-hidden"}`} type="button" onClick={() => scrollStrip(investorStripRef, -1)} disabled={!investorScroll.left} aria-label="Pokaż wcześniejszych inwestorów">‹</button>
-          <div className="filter-row" ref={investorStripRef} role="group" aria-label="Filtr inwestora">
-            <button type="button" className={`all-investors ${selectedInvestor === "all" ? "active" : ""}`} onClick={() => setSelectedInvestor("all")}>Wszyscy</button>
-            {data?.investors.map((investor) => (
-              <button type="button" key={investor.username} className={selectedInvestor === investor.username ? "active" : ""} onClick={() => setSelectedInvestor(investor.username)}>
-                <span className="filter-investor-name">
-                  <strong>{investor.fullName}</strong>
-                  <small>@{investor.username}</small>
-                </span>
-              </button>
-            ))}
-          </div>
-          <button className={`strip-arrow ${investorScroll.right ? "" : "is-hidden"}`} type="button" onClick={() => scrollStrip(investorStripRef, 1)} disabled={!investorScroll.right} aria-label="Pokaż kolejnych inwestorów">›</button>
-        </div>
       </section>
 
       <RecentActivityPanels
@@ -2248,28 +2163,6 @@ export function Dashboard() {
       />
 
       <CompanyDiscussionSection />
-
-      <section className="investors-section" aria-labelledby="investors-title">
-        <div className="section-heading">
-          <div><span className="section-kicker">Profile i wyniki</span><h2 id="investors-title">Obserwowani inwestorzy{data?.investors.length ? ` (${data.investors.length})` : ""}</h2></div>
-          <div className="sort-controls" role="group" aria-label="Sortowanie inwestorów">
-            <button type="button" className={investorSort === "slot" ? "active" : ""} onClick={() => setInvestorSort("slot")}>Domyślnie</button>
-            <button type="button" className={investorSort === "gain" ? "active" : ""} onClick={() => setInvestorSort("gain")}>Zysk (rok)</button>
-            <button type="button" className={investorSort === "risk" ? "active" : ""} onClick={() => setInvestorSort("risk")}>Ryzyko</button>
-            <button type="button" className={investorSort === "activity" ? "active" : ""} onClick={() => setInvestorSort("activity")}>Aktywność</button>
-          </div>
-        </div>
-        <div className="investor-grid">
-          {sortedInvestors.map((investor) => (
-            <InvestorCard
-              key={investor.username}
-              investor={investor}
-              selected={selectedInvestor === investor.username}
-              onOpenPortfolio={() => setPortfolioUsername(investor.username)}
-            />
-          ))}
-        </div>
-      </section>
 
       {portfolioInvestor && (
         <PortfolioDialog

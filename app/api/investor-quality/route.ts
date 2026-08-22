@@ -1,18 +1,42 @@
-import { fetchInvestorQualityMetrics } from "../../../lib/etoro";
+import { fetchInvestorQualityMetrics, fetchInvestorQualityMetricsFromPool } from "../../../lib/etoro";
 import type { InvestorQualityMetrics } from "../../../lib/etoro";
 import { ensureSchema, getStateWithTimestamp, listInvestors, setState } from "../../../lib/store";
-import { mapWithConcurrency } from "../../../lib/concurrency";
 
 export const dynamic = "force-dynamic";
 
 const CACHE_KEY = "investor_quality_v1";
 const CACHE_TTL_MS = 60 * 60 * 1000;
-// Two eToro requests per investor (see fetchInvestorQualityMetrics), paced
-// at this concurrency — the same order of magnitude as resolveInvestors'
-// own per-investor fan-out, not the much heavier full-pool page scan that
-// tripped the rate limiter earlier. Cached for an hour so repeat visits
-// during that window are free D1 reads, not a live eToro round trip.
-const CONCURRENCY = 4;
+// Two eToro requests per investor (see fetchInvestorQualityMetrics). Batched
+// with an explicit pause between batches — plain concurrency-limiting alone
+// (mapWithConcurrency's worker pool pulls the next item the instant a slot
+// frees, no pause) was enough on its own to draw a fresh 429 partway through
+// a ~39-investor sweep, same failure mode syncPositionsForInvestors had
+// before it got the same fix.
+const CONCURRENCY = 3;
+const BATCH_PAUSE_MS = 1500;
+// The pool-scan fallback below can add up to ~40 more sequential requests
+// right after this sweep's own ~26 (39 investors ÷ 3 x 2 requests) — verified
+// directly that running them back-to-back with no gap was, on its own,
+// enough to draw a fresh 429 on the fallback's very first request even
+// though the main sweep itself had just finished cleanly. This gap gives
+// eToro's side a moment to breathe between the two.
+const FALLBACK_GAP_MS = 4000;
+// If a systemic failure (rate-limit cooldown tripped mid-sweep, etc.) wipes
+// out most results, the run isn't trustworthy "nobody qualifies" data — it's
+// a broken sweep that happens to look like one. Caching it would serve that
+// false "nobody qualifies" answer to every visitor for the next hour, so a
+// sweep this unreliable is discarded in favor of whatever was cached before.
+const UNRELIABLE_NULL_FRACTION = 0.4;
+
+async function pause(ms: number) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function chunkArray<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) chunks.push(items.slice(i, i + size));
+  return chunks;
+}
 
 export type InvestorQualityResult = {
   username: string;
@@ -82,13 +106,52 @@ export async function GET(request: Request) {
     }
 
     const investors = await listInvestors();
-    const results = await mapWithConcurrency(investors, CONCURRENCY, async (investor) => {
-      const metrics = await fetchInvestorQualityMetrics(investor.username).catch(() => null);
-      return evaluate(investor.username, metrics);
-    });
+    const results: InvestorQualityResult[] = [];
+    const batches = chunkArray(investors, CONCURRENCY);
+    for (let i = 0; i < batches.length; i++) {
+      const batchResults = await Promise.all(batches[i].map(async (investor) => {
+        const metrics = await fetchInvestorQualityMetrics(investor.username).catch(() => null);
+        return evaluate(investor.username, metrics);
+      }));
+      results.push(...batchResults);
+      if (i + 1 < batches.length) await pause(BATCH_PAUSE_MS);
+    }
+
+    const nullCount = results.filter((result) => result.metrics === null).length;
+    const looksUnreliable = results.length > 0 && nullCount / results.length > UNRELIABLE_NULL_FRACTION;
+    if (looksUnreliable && cached) {
+      // Keep serving the last trustworthy sweep rather than overwrite it
+      // with this one — cache timestamp is intentionally left untouched so
+      // the next visit retries a fresh sweep instead of waiting out the TTL.
+      return Response.json(JSON.parse(cached.value) as InvestorQualityPayload, {
+        headers: { "Cache-Control": "no-store, no-cache, must-revalidate" },
+      });
+    }
+
+    // A healthy-looking sweep can still leave a handful of genuinely new
+    // accounts with no data — the per-investor endpoint just doesn't have
+    // them indexed yet, verified separately from any rate-limit disruption
+    // (that case was already ruled out above by looksUnreliable). The bulk
+    // ranking pool these accounts were originally found through carries the
+    // same fields, so one scan recovers all of them together rather than
+    // leaving each permanently stuck on "no data".
+    const stillMissing = results.filter((result) => result.metrics === null).map((result) => result.username);
+    if (stillMissing.length) {
+      await pause(FALLBACK_GAP_MS);
+      const recovered = await fetchInvestorQualityMetricsFromPool(stillMissing).catch((error) => {
+        console.error("[investor-quality] pool-scan fallback failed", error instanceof Error ? error.message : error);
+        return new Map<string, InvestorQualityMetrics>();
+      });
+      if (recovered.size) {
+        for (let i = 0; i < results.length; i++) {
+          const metrics = recovered.get(results[i].username.toLowerCase());
+          if (metrics) results[i] = evaluate(results[i].username, metrics);
+        }
+      }
+    }
 
     const payload: InvestorQualityPayload = { computedAt: new Date().toISOString(), results };
-    await setState(CACHE_KEY, JSON.stringify(payload)).catch(() => {});
+    if (!looksUnreliable) await setState(CACHE_KEY, JSON.stringify(payload)).catch(() => {});
     return Response.json(payload, {
       headers: { "Cache-Control": "no-store, no-cache, must-revalidate" },
     });

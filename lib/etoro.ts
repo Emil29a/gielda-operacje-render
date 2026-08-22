@@ -952,6 +952,116 @@ export async function fetchInvestorQualityMetrics(username: string): Promise<Inv
   };
 }
 
+type PoolQualityRow = {
+  username: string;
+  gain: number;
+  winRatio: number | null;
+  riskScore: number | null;
+  highLeveragePct: number | null;
+  trades: number | null;
+  copiers: number | null;
+  copiersGain: number | null;
+};
+
+async function fetchQualityRankPage(
+  period: string,
+  page: number,
+): Promise<{ rows: PoolQualityRow[]; totalItems: number | null }> {
+  const data = await etoroRequest<{
+    results?: Array<{
+      username?: string;
+      gain?: number;
+      winRatio?: number;
+      riskScore?: number;
+      highLeveragePct?: number;
+      trades?: number;
+      copiers?: number;
+      copiersGain?: number;
+    }>;
+    pagination?: { totalItems?: number };
+  }>(`/api/v2/portfolios/rankings?period=${period}&sort=-gain&copiersMin=${RANK_COPIERS_MIN}&pageSize=${RANK_PAGE_SIZE}&page=${page}`);
+  return {
+    rows: (data.results ?? []).flatMap((row) => row.username ? [{
+      username: row.username,
+      gain: row.gain ?? 0,
+      winRatio: row.winRatio ?? null,
+      riskScore: row.riskScore ?? null,
+      highLeveragePct: row.highLeveragePct ?? null,
+      trades: row.trades ?? null,
+      copiers: row.copiers ?? null,
+      copiersGain: row.copiersGain ?? null,
+    }] : []),
+    totalItems: data.pagination?.totalItems ?? null,
+  };
+}
+
+// Scans the same copiersMin ranking pool findExactRank uses, for one period,
+// sequentially page by page (never parallel — a page-request burst is
+// exactly the pattern that has tripped eToro's rate limiter before),
+// collecting rows for whichever usernames are still being looked for. Stops
+// early the moment every target is found rather than always walking the
+// full ~20-page pool.
+async function scanPoolForUsernames(
+  usernames: string[],
+  period: string,
+): Promise<Map<string, PoolQualityRow>> {
+  const targets = new Set(usernames.map((username) => username.toLowerCase()));
+  const found = new Map<string, PoolQualityRow>();
+  if (!targets.size) return found;
+  const collect = (rows: PoolQualityRow[]) => {
+    for (const row of rows) {
+      const key = row.username.toLowerCase();
+      if (targets.has(key)) found.set(key, row);
+    }
+  };
+  const first = await fetchQualityRankPage(period, 1).catch((error) => {
+    console.error(`[etoro] scanPoolForUsernames(${period}) failed on page 1`, error instanceof Error ? error.message : error);
+    return null;
+  });
+  if (!first || first.totalItems == null) return found;
+  collect(first.rows);
+  const totalPages = Math.ceil(first.totalItems / RANK_PAGE_SIZE);
+  for (let page = 2; page <= totalPages && found.size < targets.size; page++) {
+    const data = await fetchQualityRankPage(period, page).catch(() => null);
+    if (!data) continue;
+    collect(data.rows);
+  }
+  return found;
+}
+
+// Fallback for investors the cheap per-investor rankings endpoint returns
+// nothing for (verified: happens for genuinely new accounts eToro hasn't
+// indexed into that endpoint yet, not a rate-limit artifact) — the bulk
+// ranking-pool list these same accounts were originally discovered through
+// carries the identical fields per row, so one full pool scan (LastTwoYears,
+// then CurrYear for ytd) recovers all of them at once instead of leaving
+// them permanently stuck on "no data". Costlier than the per-investor path
+// (up to ~2 x 20 requests instead of 2 per investor), so this only runs for
+// whatever the cheap path couldn't resolve, and the two period scans run
+// sequentially rather than in parallel to keep peak request rate down.
+export async function fetchInvestorQualityMetricsFromPool(
+  usernames: string[],
+): Promise<Map<string, InvestorQualityMetrics>> {
+  const result = new Map<string, InvestorQualityMetrics>();
+  if (!usernames.length) return result;
+  const twoYearRows = await scanPoolForUsernames(usernames, "LastTwoYears");
+  if (!twoYearRows.size) return result;
+  const currYearRows = await scanPoolForUsernames([...twoYearRows.keys()], "CurrYear");
+  for (const [key, row] of twoYearRows) {
+    result.set(key, {
+      gain2y: row.gain * 100,
+      ytd: currYearRows.get(key)?.gain != null ? currYearRows.get(key)!.gain * 100 : null,
+      winRatio: row.winRatio,
+      riskScore: row.riskScore,
+      highLeveragePct: row.highLeveragePct,
+      trades2y: row.trades,
+      copiers: row.copiers,
+      copiersGain: row.copiersGain != null ? row.copiersGain * 100 : null,
+    });
+  }
+  return result;
+}
+
 // Turns a user-typed ticker or company name into eToro instrumentIds. eToro's
 // /market-data/search takes a `fields` allowlist plus either an
 // internalSymbolFull or displayname filter — both do prefix/substring
