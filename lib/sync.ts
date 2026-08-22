@@ -40,7 +40,21 @@ const BATCH_PAUSE_MS = 1_500;
 // history) instead of being spent entirely on profile lookups. Convergence
 // to "everyone fully resolved" happens gradually, over several visits.
 const IDENTITY_BATCH_LIMIT = 15;
-const FULL_PROFILE_BATCH_LIMIT = 15;
+// Dialed back from 15: at 15 x 3 requests, this step alone was heavy enough
+// that — stacked on top of the portfolio sync step immediately before it in
+// the same tick — the combined total was repeatedly enough to draw a fresh
+// 429 partway through, even with per-batch pacing on each step individually.
+// A tripped cooldown here doesn't just stall this step: it also blocks the
+// dashboard route's live instrument-name self-heal for the rest of that same
+// request, which is why unresolved "#id" placeholders and this step's gaps
+// tend to show up together. Smaller here means slower backlog convergence
+// but a real chance of each tick actually finishing clean.
+const FULL_PROFILE_BATCH_LIMIT = 6;
+// A short gap between major steps, not just between batches within one —
+// spreads the tick's total request volume out over more real time instead
+// of the portfolio sync step's last request being immediately followed by
+// the identity/profile steps' first one.
+const STEP_GAP_MS = 2_000;
 
 const POSITION_SYNC_LOCK_TTL_MS = 5 * 60 * 1000;
 const MIN_POSITION_SYNC_INTERVAL_MS = 90 * 1000;
@@ -211,6 +225,7 @@ export async function synchronizePositionsOnly() {
     } catch (error) {
       console.error("[sync] portfolio sync step failed", error instanceof Error ? error.message : error);
     }
+    await pause(STEP_GAP_MS);
 
     // 2. Cheap identity (cid/name/avatar) for a small batch of investors
     // that don't have it yet — 1 request each, unlocks history + display.
@@ -223,6 +238,7 @@ export async function synchronizePositionsOnly() {
       );
       if (resolved.length) await updateInvestors(resolved);
       investors = await listInvestors();
+      await pause(STEP_GAP_MS);
     }
 
     // 3. Full profile (gain stats) for a small batch of already-identified
@@ -240,6 +256,7 @@ export async function synchronizePositionsOnly() {
       );
       if (resolved.length) await updateInvestors(resolved);
       investors = await listInvestors();
+      await pause(STEP_GAP_MS);
     }
 
     // 4. Today's precise history — also only for investors with a cid.

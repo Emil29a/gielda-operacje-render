@@ -750,22 +750,10 @@ type RecentActivityPayload = {
   groups: RecentActivityGroup[];
 };
 
-type InvestorQualityMetrics = {
-  gain2y: number | null;
-  ytd: number | null;
-  winRatio: number | null;
-  riskScore: number | null;
-  highLeveragePct: number | null;
-  trades2y: number | null;
-  copiers: number | null;
-  copiersGain: number | null;
-};
-
 type InvestorQualityResult = {
   username: string;
   meetsCriteria: boolean;
   reasons: string[];
-  metrics: InvestorQualityMetrics | null;
 };
 
 type InvestorQualityPayload = {
@@ -1715,10 +1703,8 @@ export function Dashboard() {
   useEffect(() => () => activeRecentTradesLoad.current?.abort(), []);
 
   useEffect(() => {
-    // Independent of the main dashboard load: 2 eToro requests per tracked
-    // investor (see /api/investor-quality), cached server-side for an hour,
-    // so this can take up to ~20-30s on a cold cache but is a free D1 read
-    // on every visit within that window.
+    // A static allowlist (see /api/investor-quality) — no eToro requests,
+    // resolves almost instantly.
     let cancelled = false;
     api<InvestorQualityPayload>("/api/investor-quality")
       .then((payload) => { if (!cancelled) setQualityData(payload); })
