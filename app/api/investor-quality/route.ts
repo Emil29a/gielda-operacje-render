@@ -41,6 +41,10 @@ const QUALIFYING_USERNAMES = new Set([
   "aguero1010",
   "sylviafarre",
   "rudolfdeleeuw",
+  // From the second (relaxed-threshold) screen — these two are the only
+  // ones that also satisfy the original, unrelaxed thresholds above.
+  "loicinv",
+  "dennisfantoni",
 ].map((username) => username.toLowerCase()));
 
 export async function GET() {

@@ -43,6 +43,30 @@ export const TRACKED_USERNAMES = [
   "aguero1010",
   "sylviafarre",
   "rudolfdeleeuw",
+  // Added from a second statistical screen with two thresholds relaxed
+  // (2yr gain floor 65% -> 50%, YTD floor 20% -> 15%; risk/leverage/
+  // trades/win ratio/copiersGain left unchanged) against the same
+  // copiersMin=7 ranking pool. Only loicinv and dennisfantoni satisfy the
+  // original, unrelaxed thresholds too — see QUALIFYING_USERNAMES in
+  // app/api/investor-quality/route.ts.
+  "n13rka",
+  "gereontrading",
+  "loicinv",
+  "michalhla",
+  "fs11depot",
+  "diogocostarocha",
+  "dennisfantoni",
+  "mcgintye",
+  "tonydun",
+  "dodulik",
+  "simonerizzetto88",
+  "ingruc",
+  "demtheo27",
+  "khbardales",
+  "genesisgains",
+  "carlosmartm",
+  "spx5000trading",
+  "eduarddinu",
 ] as const;
 
 export function trackedInvestorPlaceholders(): Investor[] {
