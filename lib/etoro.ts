@@ -1,7 +1,7 @@
 import type { AssetAllocationSeries, FeedPost, GainPoint, HistoricalPosition, Instrument, InvestorExtendedStats, Investor, MarketRate, PortfolioPosition } from "./types";
 import { shiftDateKey, warsawDateKey } from "./time";
 import { mapWithConcurrency } from "./concurrency";
-import { findKnownExchangeNames, findKnownInstruments, getState, getStateWithTimestamp, setState } from "./store";
+import { findKnownExchangeNames, findKnownInstruments, getState, getStates, getStateWithTimestamp, setState } from "./store";
 
 const INVESTOR_REQUEST_CONCURRENCY = 5;
 // lib/sync.ts's runScheduledSync() proactively warms this cache every tick
@@ -385,17 +385,21 @@ async function fetchInstrumentsLive(ids: number[]): Promise<Instrument[]> {
 export async function fetchInstruments(instrumentIds: number[]): Promise<Instrument[]> {
   const ids = [...new Set(instrumentIds)].filter(Number.isFinite);
   if (!ids.length) return [];
-  const cachedEntries = await Promise.all(ids.map(async (id) => {
-    const raw = await getState(`instrument:${id}`).catch(() => null);
-    return raw ? (JSON.parse(raw) as Instrument) : null;
-  }));
+  const cachedRaw = await getStates(ids.map((id) => `instrument:${id}`)).catch(() => new Map<string, string>());
   const resultMap = new Map<number, Instrument>();
   const missingIds: number[] = [];
-  ids.forEach((id, index) => {
-    const cached = cachedEntries[index];
-    if (cached) resultMap.set(id, cached);
-    else missingIds.push(id);
-  });
+  for (const id of ids) {
+    const raw = cachedRaw.get(`instrument:${id}`);
+    if (raw) {
+      try {
+        resultMap.set(id, JSON.parse(raw) as Instrument);
+        continue;
+      } catch {
+        // fall through to missing
+      }
+    }
+    missingIds.push(id);
+  }
   if (missingIds.length) {
     // Before attempting a live lookup (which may be rate-limited), reuse
     // symbol/name data eToro has already given us for these instruments on
@@ -457,14 +461,14 @@ async function fetchExchangesLive(ids: number[]): Promise<Map<number, string>> {
 export async function fetchExchanges(exchangeIds: number[]): Promise<Map<number, string>> {
   const ids = [...new Set(exchangeIds)].filter(Number.isFinite);
   if (!ids.length) return new Map();
-  const cachedEntries = await Promise.all(ids.map((id) => getState(`exchange:${id}`).catch(() => null)));
+  const cachedRaw = await getStates(ids.map((id) => `exchange:${id}`)).catch(() => new Map<string, string>());
   const resultMap = new Map<number, string>();
   const missingIds: number[] = [];
-  ids.forEach((id, index) => {
-    const cached = cachedEntries[index];
+  for (const id of ids) {
+    const cached = cachedRaw.get(`exchange:${id}`);
     if (cached) resultMap.set(id, cached);
     else missingIds.push(id);
-  });
+  }
   if (missingIds.length) {
     const known = await findKnownExchangeNames(missingIds).catch(() => new Map<number, string>());
     const stillMissing: number[] = [];
@@ -635,22 +639,28 @@ const MARKET_RATE_CACHE_TTL_MS = 45 * 1000;
 export async function fetchMarketRates(instrumentIds: number[]): Promise<MarketRate[]> {
   const ids = [...new Set(instrumentIds)].filter(Number.isFinite);
   if (!ids.length) return [];
-  const cachedEntries = await Promise.all(ids.map(async (id) => {
-    const cached = await getStateWithTimestamp(`rate:${id}`).catch(() => null);
-    if (!cached || Date.now() - new Date(cached.updated_at).getTime() >= MARKET_RATE_CACHE_TTL_MS) return null;
-    try {
-      return JSON.parse(cached.value) as MarketRate;
-    } catch {
-      return null;
-    }
-  }));
+  // The expiry travels inside the stored value itself (cachedAt) rather
+  // than relying on app_state's own updated_at column, so the batched
+  // getStates() read (one query for every id) can double as the TTL check
+  // without needing a batched with-timestamp variant of it too.
+  const cachedRaw = await getStates(ids.map((id) => `rate:${id}`)).catch(() => new Map<string, string>());
   const resultMap = new Map<number, MarketRate>();
   const missingIds: number[] = [];
-  ids.forEach((id, index) => {
-    const cached = cachedEntries[index];
-    if (cached) resultMap.set(id, cached);
-    else missingIds.push(id);
-  });
+  for (const id of ids) {
+    const raw = cachedRaw.get(`rate:${id}`);
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw) as MarketRate & { cachedAt?: number };
+        if (parsed.cachedAt != null && Date.now() - parsed.cachedAt < MARKET_RATE_CACHE_TTL_MS) {
+          resultMap.set(id, parsed);
+          continue;
+        }
+      } catch {
+        // fall through to missing
+      }
+    }
+    missingIds.push(id);
+  }
   if (missingIds.length) {
     const chunks = Array.from({ length: Math.ceil(missingIds.length / 100) }, (_, index) =>
       missingIds.slice(index * 100, index * 100 + 100),
@@ -683,8 +693,9 @@ export async function fetchMarketRates(instrumentIds: number[]): Promise<MarketR
         rateAt: item.date ?? null,
       };
     }).filter((item) => Number.isFinite(item.instrumentId));
+    const cachedAt = Date.now();
     await Promise.all(fetched.map((rate) =>
-      setState(`rate:${rate.instrumentId}`, JSON.stringify(rate)).catch(() => {}),
+      setState(`rate:${rate.instrumentId}`, JSON.stringify({ ...rate, cachedAt })).catch(() => {}),
     ));
     for (const rate of fetched) resultMap.set(rate.instrumentId, rate);
   }

@@ -8,11 +8,18 @@ import type { DashboardPayload, Instrument, TradeEvent } from "../../../lib/type
 import { mapWithConcurrency, withDeadline } from "../../../lib/concurrency";
 
 // Hard ceiling on how long any single external-data step may hold up the
-// response. fetchInstruments/fetchExchanges are D1-cached (fast on a hit),
-// but fetchMarketRates has no cache at all and calls eToro live on every
-// request — without a deadline, a slow upstream there reproduces the exact
-// hang this file was already fixed for once (see getCachedPublicHistory).
-const EXTERNAL_STEP_DEADLINE_MS = 5_000;
+// response. fetchInstruments/fetchExchanges/fetchMarketRates are all
+// D1-cached now (a single batched query per step, not one read per id —
+// that per-id version was slow enough at 600+ instruments to blow through
+// this deadline on cache hits alone, discarding an otherwise-correct
+// result and showing "#id" placeholders despite the cache having the real
+// name all along). Still bounded: a cache miss falls through to a live
+// eToro call, and without a deadline a slow upstream there reproduces the
+// exact hang this file was already fixed for once (see
+// getCachedPublicHistory). Raised from 5s now that the cache-hit path is
+// fast, to give the live-fallback path more real room to actually finish
+// instead of getting cut off right as it starts to matter.
+const EXTERNAL_STEP_DEADLINE_MS = 9_000;
 
 export const dynamic = "force-dynamic";
 

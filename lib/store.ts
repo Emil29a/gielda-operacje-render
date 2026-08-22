@@ -273,6 +273,30 @@ export async function getState(key: string) {
   return row?.value ?? null;
 }
 
+// Batched counterpart to getState — callers that need dozens or hundreds of
+// keys (e.g. fetchInstruments checking one "instrument:{id}" entry per
+// distinct instrument in view) used to issue one D1 request per key via
+// Promise.all. At today's scale (600+ distinct instruments on a busy day)
+// that alone took several seconds — enough to blow through the dashboard
+// route's 5s external-step deadline even when every single lookup was a
+// cache hit, discarding an otherwise-complete, correct result. One batched
+// IN-query (chunked to stay under D1's per-statement parameter limit) does
+// the same lookups in a fraction of the time.
+export async function getStates(keys: string[]): Promise<Map<string, string>> {
+  const result = new Map<string, string>();
+  if (!keys.length) return result;
+  const d1 = getD1();
+  for (const keyChunk of chunk(keys, SQL_IN_CHUNK_SIZE)) {
+    const placeholders = keyChunk.map(() => "?").join(",");
+    const rows = await d1
+      .prepare(`SELECT key, value FROM app_state WHERE key IN (${placeholders})`)
+      .bind(...keyChunk)
+      .all<{ key: string; value: string }>();
+    for (const row of rows.results) result.set(row.key, row.value);
+  }
+  return result;
+}
+
 export async function getStateWithTimestamp(key: string) {
   const row = await getD1()
     .prepare("SELECT value, updated_at FROM app_state WHERE key = ?")
