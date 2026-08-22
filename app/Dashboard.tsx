@@ -1572,50 +1572,56 @@ function SummaryDialog({
             return (
               <button
                 type="button"
-                className="summary-dialog-person"
+                className="summary-dialog-person has-transaction"
                 key={username}
                 onClick={() => onOpenInvestor(investor?.username ?? username)}
               >
-                <span className={`avatar summary-dialog-avatar avatar-${investor?.slot ?? 1}`}>
-                  {investor?.avatarUrl ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={investor.avatarUrl} alt="" />
-                  ) : <span aria-hidden="true">{initials(username)}</span>}
-                </span>
-                <span className="summary-dialog-person-name">
-                  <strong>{investor?.fullName ?? username}</strong>
-                  <small>@{username}</small>
-                  {oppositeEvent && (
-                    <small className="summary-dialog-flip-note">
-                      Tego dnia też: {eventLabel(oppositeEvent).toLowerCase()} · {formatTime(oppositeEvent.occurredAt, true)}
-                    </small>
-                  )}
-                </span>
-                <span className="summary-dialog-operation">
-                  <small>{events.length} {positionWord(events.length)}</small>
-                  <time dateTime={events[0].occurredAt}>{formatTime(events[0].occurredAt, true)}</time>
-                </span>
-                <span className="summary-dialog-copiers">
-                  <small>Kopiujących</small>
-                  <b>{formatNumber(investor?.copiers)}</b>
-                </span>
-                <span className="summary-dialog-return">
-                  <small>Od roku</small>
-                  <b className={gainTone(investor?.gainYtd)}>{formatPercent(investor?.gainYtd, true)}</b>
-                </span>
-                <span className="summary-dialog-return">
-                  <small>2 lata</small>
-                  <b className={gainTone(investor?.gainTwoYears)}>{formatPercent(investor?.gainTwoYears, true)}</b>
-                </span>
-                <span className="summary-dialog-return">
-                  <small>Miejsce wśród PI</small>
-                  <b>
-                    {investor?.rankPosition != null && investor?.rankPoolSize != null
-                      ? `${investor.rankPosition}. z ${investor.rankPoolSize}`
-                      : "—"}
-                  </b>
-                </span>
-                <span className="summary-dialog-open" aria-hidden="true">›</span>
+                <div className="summary-dialog-person-top">
+                  <span className={`avatar summary-dialog-avatar avatar-${investor?.slot ?? 1}`}>
+                    {investor?.avatarUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={investor.avatarUrl} alt="" />
+                    ) : <span aria-hidden="true">{initials(username)}</span>}
+                  </span>
+                  <span className="summary-dialog-person-name">
+                    <strong>{investor?.fullName ?? username}</strong>
+                    <small>@{username}</small>
+                    {oppositeEvent && (
+                      <small className="summary-dialog-flip-note">
+                        Tego dnia też: {eventLabel(oppositeEvent).toLowerCase()} · {formatTime(oppositeEvent.occurredAt, true)}
+                      </small>
+                    )}
+                  </span>
+                  <span className="summary-dialog-operation">
+                    <small>{events.length} {positionWord(events.length)}</small>
+                    <time dateTime={events[0].occurredAt}>{formatTime(events[0].occurredAt, true)}</time>
+                  </span>
+                  <span className="summary-dialog-copiers">
+                    <small>Kopiujących</small>
+                    <b>{formatNumber(investor?.copiers)}</b>
+                  </span>
+                  <span className="summary-dialog-return">
+                    <small>Od roku</small>
+                    <b className={gainTone(investor?.gainYtd)}>{formatPercent(investor?.gainYtd, true)}</b>
+                  </span>
+                  <span className="summary-dialog-return">
+                    <small>2 lata</small>
+                    <b className={gainTone(investor?.gainTwoYears)}>{formatPercent(investor?.gainTwoYears, true)}</b>
+                  </span>
+                  <span className="summary-dialog-return">
+                    <small>Miejsce wśród PI</small>
+                    <b>
+                      {investor?.rankPosition != null && investor?.rankPoolSize != null
+                        ? `${investor.rankPosition}. z ${investor.rankPoolSize}`
+                        : "—"}
+                    </b>
+                  </span>
+                  <span className="summary-dialog-open" aria-hidden="true">›</span>
+                </div>
+                <div className="summary-dialog-transaction">
+                  {events.some((item) => item.netProfit != null) && <GroupedPositionReturn events={events} />}
+                  <GroupedPriceMovement events={events} />
+                </div>
               </button>
             );
           })}
@@ -1812,12 +1818,17 @@ export function Dashboard() {
         });
       }
     }
+    // Same investor count sorts alphabetically, matching "Ostatnie dni
+    // sesyjne" — positions (merged/grouped transaction count within one
+    // investor) only breaks a tie when the alphabetical keys also tie,
+    // instead of jumping a company up the list for a reason the compact
+    // card (which only shows the investor count) doesn't make visible.
     return [...summaries.values()].sort((a, b) =>
       b.investors.size - a.investors.size
-      || b.positions - a.positions
       || a.event.displayName.localeCompare(b.event.displayName, "pl")
       || a.event.symbol.localeCompare(b.event.symbol, "pl")
-      || a.event.eventType.localeCompare(b.event.eventType),
+      || a.event.eventType.localeCompare(b.event.eventType)
+      || b.positions - a.positions,
     );
   }, [visibleEvents]);
   const selectedSummary = daySummary.find((summary) => summary.key === selectedSummaryKey) ?? null;

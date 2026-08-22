@@ -506,6 +506,10 @@ section.recent-activity-summary { margin: 12px auto 0; }
 .summary-dialog-list { min-height: 180px; max-height: min(68vh, 680px); overflow-y: auto; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-content: start; gap: 7px; padding: 10px 14px 14px; }
 .summary-dialog-person { min-width: 0; display: grid; grid-template-columns: auto minmax(105px, 1fr) auto auto auto auto auto 18px; align-items: center; gap: 8px; padding: 9px; border: 1px solid var(--line); border-radius: 9px; background: #fff; color: var(--ink); cursor: pointer; text-align: left; transition: border-color .15s ease, box-shadow .15s ease; }
 .summary-dialog-person:hover { border-color: var(--green); box-shadow: 0 6px 18px rgba(16,37,63,.07); }
+.summary-dialog-person.has-transaction { display: flex; flex-direction: column; gap: 8px; }
+.summary-dialog-person-top { min-width: 0; display: grid; grid-template-columns: auto minmax(105px, 1fr) auto auto auto auto auto 18px; align-items: center; gap: 8px; }
+.summary-dialog-transaction { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+.summary-dialog-transaction .position-return, .summary-dialog-transaction .price-movement { flex: 1 1 140px; min-width: 0; }
 .summary-dialog-avatar { width: 36px; height: 36px; font-size: 9px; }
 .summary-dialog-person-name { min-width: 0; display: grid; gap: 2px; }
 .summary-dialog-person-name strong, .summary-dialog-person-name small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -575,7 +579,7 @@ footer p { max-width: 690px; }
   .summary-dialog-toolbar { align-items: stretch; flex-direction: column; gap: 7px; }
   .summary-dialog-toolbar label { width: 100%; }
   .summary-dialog-list { flex: 1 1 auto; min-height: 0; max-height: none; padding: 8px; }
-  .summary-dialog-person { grid-template-columns: auto minmax(0, 1fr) auto auto auto; grid-template-rows: auto auto; gap: 3px 7px; }
+  .summary-dialog-person, .summary-dialog-person-top { grid-template-columns: auto minmax(0, 1fr) auto auto auto; grid-template-rows: auto auto; gap: 3px 7px; }
   .summary-dialog-avatar { grid-column: 1; grid-row: 1 / span 2; }
   .summary-dialog-person-name { grid-column: 2; grid-row: 1; }
   .summary-dialog-operation { grid-column: 2; grid-row: 2; }
@@ -584,6 +588,7 @@ footer p { max-width: 690px; }
   .summary-dialog-return:nth-of-type(6) { grid-column: 4; grid-row: 2; }
   .summary-dialog-return:nth-of-type(7) { grid-column: 5; grid-row: 1 / span 2; }
   .summary-dialog-open { display: none; }
+  .summary-dialog-transaction { flex-direction: column; }
   .recent-activity-dialog .summary-dialog-person { grid-template-columns: auto minmax(0, 1fr); grid-template-rows: auto auto; align-items: start; }
   .recent-activity-dialog .summary-dialog-avatar { grid-column: 1; grid-row: 1; }
   .recent-activity-dialog .summary-dialog-person-name { grid-column: 2; grid-row: 1; }
