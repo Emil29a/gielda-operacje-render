@@ -4,7 +4,7 @@ import type { StoredPosition } from "../../../lib/store";
 import { ensureBootstrapped, synchronizePositionsOnly } from "../../../lib/sync";
 import { formatWarsawDate, isValidDateKey, warsawDateKey, WARSAW_TIMEZONE } from "../../../lib/time";
 import { formatPrice } from "../../../lib/format";
-import type { DashboardPayload, Instrument, TradeEvent } from "../../../lib/types";
+import type { DashboardPayload, HistoricalPosition, Instrument, Investor, TradeEvent } from "../../../lib/types";
 import { mapWithConcurrency, withDeadline } from "../../../lib/concurrency";
 
 // Hard ceiling on how long any single external-data step may hold up the
@@ -64,18 +64,35 @@ export async function GET(request: Request) {
     // evolving through the day), so its fallback can run again on a later
     // visit; that's fine, it's the same gentle pacing either way.
     const HISTORY_FETCH_CONCURRENCY = 3;
-    const historyByInvestor = mode === "live"
-      ? await mapWithConcurrency(investors, HISTORY_FETCH_CONCURRENCY, async (investor) => {
-          const { positions, cached } = await getCachedPublicHistory(investor.cid, selectedDate);
-          if (cached) return { investor, positions };
-          if (investor.cid !== 0) {
-            const livePositions = await fetchPublicHistory(investor.cid, selectedDate).catch(() => null);
-            if (livePositions) return { investor, positions: livePositions };
-          }
-          unavailableHistory.push(investor.username);
-          return { investor, positions };
-        })
-      : [];
+    // The public-history endpoint turned out to have a much stricter rate
+    // limit than the rest of the API (verified: ~9 back-to-back calls trips
+    // a dedicated 45-minute cooldown, far longer than the general one) — a
+    // date nobody has ever viewed before (or a batch of newly-tracked
+    // investors on any date) used to attempt a live fetch for every single
+    // uncached investor in one pass, which is exactly the burst that trips
+    // it. Cache reads first (cheap D1, not eToro calls, so every investor
+    // still gets checked), then live fetches are capped at this many per
+    // visit; whoever doesn't fit shows as unavailable this once and
+    // resolves permanently on a later visit instead.
+    const HISTORY_LIVE_FETCH_LIMIT = 6;
+    let historyByInvestor: Array<{ investor: Investor; positions: HistoricalPosition[] }> = [];
+    if (mode === "live") {
+      const cacheResults = await mapWithConcurrency(investors, HISTORY_FETCH_CONCURRENCY, async (investor) => {
+        const { positions, cached } = await getCachedPublicHistory(investor.cid, selectedDate);
+        return { investor, positions, cached };
+      });
+      const needsLive = cacheResults.filter((result) => !result.cached && result.investor.cid !== 0);
+      const toFetch = new Set(needsLive.slice(0, HISTORY_LIVE_FETCH_LIMIT).map((result) => result.investor.username));
+      historyByInvestor = await mapWithConcurrency(cacheResults, HISTORY_FETCH_CONCURRENCY, async ({ investor, positions, cached }) => {
+        if (cached) return { investor, positions };
+        if (toFetch.has(investor.username)) {
+          const livePositions = await fetchPublicHistory(investor.cid, selectedDate).catch(() => null);
+          if (livePositions) return { investor, positions: livePositions };
+        }
+        unavailableHistory.push(investor.username);
+        return { investor, positions };
+      });
+    }
     const historyInstrumentList = mode === "live"
       ? await withDeadline(
           fetchInstruments([

@@ -4,6 +4,7 @@ import {
   fetchInstruments,
   fetchPortfolio,
   fetchPublicHistory,
+  HISTORY_CACHE_TTL_MS,
   resolveInvestorIdentities,
   resolveInvestors,
 } from "./etoro";
@@ -11,6 +12,7 @@ import { warsawDateKey } from "./time";
 import {
   ensureSchema,
   getState,
+  getStatesWithTimestamps,
   listInvestors,
   replaceInvestors,
   setState,
@@ -55,6 +57,16 @@ const FULL_PROFILE_BATCH_LIMIT = 6;
 // of the portfolio sync step's last request being immediately followed by
 // the identity/profile steps' first one.
 const STEP_GAP_MS = 2_000;
+// The public-history endpoint turned out to have its own, much stricter
+// rate limit than the rest of the API — verified directly: ~9 back-to-back
+// fetchPublicHistory calls tripped a dedicated history cooldown lasting 45
+// minutes (far longer than the general API cooldown's 8-45 min sliding
+// scale), while every other step tolerated several times that volume. A
+// burst of investors whose history has genuinely never been cached (e.g.
+// a freshly-added batch) used to try to warm all of them in one tick; now
+// it only live-fetches up to this many per tick, safely under the observed
+// wall, and leaves the rest for the next tick(s) to pick up gradually.
+const HISTORY_WARM_BATCH_LIMIT = 6;
 
 const POSITION_SYNC_LOCK_TTL_MS = 5 * 60 * 1000;
 const MIN_POSITION_SYNC_INTERVAL_MS = 90 * 1000;
@@ -146,13 +158,35 @@ async function syncPortfolios(investors: Investor[]) {
 // back to a live fetch for any investor whose cache this hasn't reached
 // yet, so today's view is always complete even between visits; this is
 // what keeps that fallback rare.
+//
+// A cheap batched read decides who actually still needs a live call (cache
+// missing or older than HISTORY_CACHE_TTL_MS) before spending any request
+// budget — most ticks this finds almost nobody, since a successful fetch
+// keeps a given investor's entry fresh well past the next several ticks.
+// The live-fetch count is then capped at HISTORY_WARM_BATCH_LIMIT: a
+// investor whose cache has simply never been populated (e.g. right after
+// being added to TRACKED_USERNAMES) used to mean every one of them tried a
+// live fetch in the same tick, which is exactly the burst that tripped the
+// history endpoint's own stricter rate limit. Whoever doesn't fit in this
+// tick's budget converges over the next one(s) instead.
 async function warmHistoryForToday(investors: Investor[]) {
   const today = warsawDateKey();
   const resolved = investors.filter((investor) => investor.cid !== 0);
-  for (let i = 0; i < resolved.length; i += HISTORY_CONCURRENCY) {
-    const batch = resolved.slice(i, i + HISTORY_CONCURRENCY);
+  if (!resolved.length) return;
+
+  const keys = resolved.map((investor) => `history:${investor.cid}:${today}`);
+  const cached = await getStatesWithTimestamps(keys).catch(() => new Map<string, { value: string; updatedAt: string }>());
+  const now = Date.now();
+  const stale = resolved.filter((investor) => {
+    const entry = cached.get(`history:${investor.cid}:${today}`);
+    return !entry || now - new Date(entry.updatedAt).getTime() >= HISTORY_CACHE_TTL_MS;
+  });
+  const toWarm = stale.slice(0, HISTORY_WARM_BATCH_LIMIT);
+
+  for (let i = 0; i < toWarm.length; i += HISTORY_CONCURRENCY) {
+    const batch = toWarm.slice(i, i + HISTORY_CONCURRENCY);
     await Promise.all(batch.map((investor) => fetchPublicHistory(investor.cid, today).catch(() => [])));
-    if (i + HISTORY_CONCURRENCY < resolved.length) await pause(BATCH_PAUSE_MS);
+    if (i + HISTORY_CONCURRENCY < toWarm.length) await pause(BATCH_PAUSE_MS);
   }
 }
 

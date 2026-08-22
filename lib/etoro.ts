@@ -12,7 +12,7 @@ const INVESTOR_REQUEST_CONCURRENCY = 5;
 // on an actual fetch error, not on mere expiry, so a too-short TTL here
 // meant most visits still triggered a live 27-investor fetch fan-out
 // directly in the request path regardless of the warming.
-const HISTORY_CACHE_TTL_MS = 15 * 60 * 1000;
+export const HISTORY_CACHE_TTL_MS = 15 * 60 * 1000;
 const RECENT_HISTORY_CACHE_TTL_MS = 10 * 60 * 1000;
 
 // A 429 from eToro is treated as a global, site-wide circuit breaker: every

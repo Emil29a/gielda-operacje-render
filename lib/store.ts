@@ -305,6 +305,26 @@ export async function getStateWithTimestamp(key: string) {
   return row ?? null;
 }
 
+// Batched counterpart to getStateWithTimestamp — same one-query-instead-of-N
+// reasoning as getStates, for callers that need to know *how fresh* each
+// entry is (not just whether it exists) across many keys at once, e.g.
+// checking which investors' history cache has actually expired before
+// deciding who still needs a live re-fetch.
+export async function getStatesWithTimestamps(keys: string[]): Promise<Map<string, { value: string; updatedAt: string }>> {
+  const result = new Map<string, { value: string; updatedAt: string }>();
+  if (!keys.length) return result;
+  const d1 = getD1();
+  for (const keyChunk of chunk(keys, SQL_IN_CHUNK_SIZE)) {
+    const placeholders = keyChunk.map(() => "?").join(",");
+    const rows = await d1
+      .prepare(`SELECT key, value, updated_at FROM app_state WHERE key IN (${placeholders})`)
+      .bind(...keyChunk)
+      .all<{ key: string; value: string; updated_at: string }>();
+    for (const row of rows.results) result.set(row.key, { value: row.value, updatedAt: row.updated_at });
+  }
+  return result;
+}
+
 export async function setState(key: string, value: string) {
   const now = new Date().toISOString();
   await getD1()
