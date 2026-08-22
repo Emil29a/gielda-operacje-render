@@ -7,7 +7,6 @@ import {
   resolveInvestorIdentities,
   resolveInvestors,
 } from "./etoro";
-import { mapWithConcurrency } from "./concurrency";
 import { warsawDateKey } from "./time";
 import {
   ensureSchema,
@@ -19,7 +18,7 @@ import {
   updateInvestors,
 } from "./store";
 import { hasTrackedUsernames, TRACKED_USERNAMES } from "./tracked-investors";
-import type { Investor } from "./types";
+import type { Investor, PortfolioPosition } from "./types";
 
 // Render runs this on a per-visit basis (see app/api/dashboard/route.ts),
 // not a per-invocation-billed Cloudflare Worker with a Cron Trigger to
@@ -40,14 +39,20 @@ const BATCH_PAUSE_MS = 1_500;
 // request budget goes mostly to the journal-critical steps (portfolio sync,
 // history) instead of being spent entirely on profile lookups. Convergence
 // to "everyone fully resolved" happens gradually, over several visits.
-const IDENTITY_BATCH_LIMIT = 6;
-const FULL_PROFILE_BATCH_LIMIT = 4;
+const IDENTITY_BATCH_LIMIT = 15;
+const FULL_PROFILE_BATCH_LIMIT = 15;
 
 const POSITION_SYNC_LOCK_TTL_MS = 5 * 60 * 1000;
 const MIN_POSITION_SYNC_INTERVAL_MS = 90 * 1000;
 
 async function pause(ms: number) {
   await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function chunkArray<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) chunks.push(items.slice(i, i + size));
+  return chunks;
 }
 
 // Runs resolver(batch) over usernames in small, paced batches — a failed
@@ -77,10 +82,19 @@ async function resolvePaced(
 // their profile has been resolved yet, so this always runs first and gets
 // first claim on the request budget.
 async function syncPortfolios(investors: Investor[]) {
-  const attempted = await mapWithConcurrency(
-    investors,
-    PORTFOLIO_CONCURRENCY,
-    async (investor) => ({
+  // mapWithConcurrency alone bounds *instantaneous* concurrency to
+  // PORTFOLIO_CONCURRENCY, but its worker pool pulls the next item the
+  // moment any slot frees up — no pause between batches. That was fine at
+  // 27 investors; grown to 39, a full tick's worth of back-to-back requests
+  // was enough to draw a fresh 429 from eToro on its own, escalating the
+  // shared cooldown even under otherwise reasonable pacing. Chunking into
+  // explicit batches with the same BATCH_PAUSE_MS used by resolvePaced below
+  // keeps this step's *sustained* rate in line with the rest of the sync,
+  // not just its peak concurrency.
+  const attempted: { investor: Investor; positions: PortfolioPosition[] | null }[] = [];
+  const batches = chunkArray(investors, PORTFOLIO_CONCURRENCY);
+  for (let i = 0; i < batches.length; i++) {
+    const results = await Promise.all(batches[i].map(async (investor) => ({
       investor,
       // null (not []) on failure: an empty array would tell the diffing
       // logic in syncPositionsForInvestors "every position this investor
@@ -91,8 +105,10 @@ async function syncPortfolios(investors: Investor[]) {
         console.error(`[sync] portfolio fetch failed for ${investor.username}, skipping this tick`, error instanceof Error ? error.message : error);
         return null;
       }),
-    }),
-  );
+    })));
+    attempted.push(...results);
+    if (i + 1 < batches.length) await pause(BATCH_PAUSE_MS);
+  }
   const portfolios = attempted.filter(
     (item): item is { investor: Investor; positions: NonNullable<typeof item.positions> } => item.positions !== null,
   );
@@ -152,6 +168,7 @@ export async function ensureBootstrapped(): Promise<{ investors: Investor[]; jus
       updatedAt: new Date(0).toISOString(),
       activeSince: null,
       annualizedReturn: null,
+      fiveYearGain: null,
       rankPosition: null,
       rankPoolSize: null,
     };

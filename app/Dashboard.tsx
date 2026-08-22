@@ -813,6 +813,29 @@ type RecentActivityPayload = {
   groups: RecentActivityGroup[];
 };
 
+type InvestorQualityMetrics = {
+  gain2y: number | null;
+  ytd: number | null;
+  winRatio: number | null;
+  riskScore: number | null;
+  highLeveragePct: number | null;
+  trades2y: number | null;
+  copiers: number | null;
+  copiersGain: number | null;
+};
+
+type InvestorQualityResult = {
+  username: string;
+  meetsCriteria: boolean;
+  reasons: string[];
+  metrics: InvestorQualityMetrics | null;
+};
+
+type InvestorQualityPayload = {
+  computedAt: string;
+  results: InvestorQualityResult[];
+};
+
 function dayWord(count: number) {
   return count === 1 ? "dzień" : "dni";
 }
@@ -992,6 +1015,8 @@ function RecentActivitySection({
   investors,
   filterQuery,
   onOpenInvestor,
+  qualityView,
+  qualityByUsername,
 }: {
   ready: boolean;
   days: 5 | 14 | 30;
@@ -999,6 +1024,8 @@ function RecentActivitySection({
   investors: Investor[];
   filterQuery: string;
   onOpenInvestor: (username: string) => void;
+  qualityView: "all" | "pass" | "fail";
+  qualityByUsername: Map<string, InvestorQualityResult>;
 }) {
   const [data, setData] = useState<RecentActivityPayload | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1023,11 +1050,20 @@ function RecentActivitySection({
   const visibleGroups = useMemo(() => {
     const groups = data?.groups ?? [];
     const query = filterQuery.trim().toLocaleLowerCase("pl");
-    if (!query) return groups;
-    return groups.filter((group) =>
-      group.symbol.toLocaleLowerCase("pl").includes(query) ||
-      group.displayName.toLocaleLowerCase("pl").includes(query));
-  }, [data?.groups, filterQuery]);
+    return groups
+      .map((group) => {
+        if (qualityView === "all") return group;
+        const people = group.people.filter((person) => {
+          const result = qualityByUsername.get(person.username.toLowerCase());
+          return result ? result.meetsCriteria === (qualityView === "pass") : false;
+        });
+        return { ...group, people };
+      })
+      .filter((group) => group.people.length > 0)
+      .filter((group) => !query
+        || group.symbol.toLocaleLowerCase("pl").includes(query)
+        || group.displayName.toLocaleLowerCase("pl").includes(query));
+  }, [data?.groups, filterQuery, qualityView, qualityByUsername]);
 
   const scroll = useScrollAvailability(stripRef, visibleGroups.length);
 
@@ -1044,7 +1080,7 @@ function RecentActivitySection({
     container.scrollTo({ left: target, behavior: "smooth" });
   };
 
-  const selectedGroup = data?.groups.find((group) => group.key === selectedKey) ?? null;
+  const selectedGroup = visibleGroups.find((group) => group.key === selectedKey) ?? null;
 
   // A fetch failure on this quiet, supplementary panel doesn't surface an
   // alert — it's secondary to the journal above it — but loading itself is
@@ -1098,7 +1134,15 @@ function RecentActivitySection({
             <button className={`strip-arrow ${scroll.right ? "" : "is-hidden"}`} type="button" onClick={() => scrollThisStrip(1)} disabled={!scroll.right} aria-label="Pokaż kolejne spółki">›</button>
           </div>
         ) : (
-          <div className="recent-activity-empty">Brak spółek pasujących do „{filterQuery.trim()}” w tym okresie.</div>
+          <div className="recent-activity-empty">
+            {filterQuery.trim()
+              ? `Brak spółek pasujących do „${filterQuery.trim()}” w tym okresie.`
+              : qualityView === "pass"
+                ? "Brak transakcji inwestorów spełniających wymagania w tym okresie."
+                : qualityView === "fail"
+                  ? "Brak transakcji inwestorów niespełniających wymagań w tym okresie."
+                  : "Brak spółek w tym okresie."}
+          </div>
         )}
       </section>
       {selectedGroup && (
@@ -1122,10 +1166,14 @@ function RecentActivityPanels({
   ready,
   investors,
   onOpenInvestor,
+  qualityView,
+  qualityByUsername,
 }: {
   ready: boolean;
   investors: Investor[];
   onOpenInvestor: (username: string) => void;
+  qualityView: "all" | "pass" | "fail";
+  qualityByUsername: Map<string, InvestorQualityResult>;
 }) {
   const [filterQuery, setFilterQuery] = useState("");
   return (
@@ -1142,9 +1190,9 @@ function RecentActivityPanels({
           />
         </label>
       </div>
-      <RecentActivitySection ready={ready} days={5} title="Ostatnie 5 dni sesyjnych" investors={investors} filterQuery={filterQuery} onOpenInvestor={onOpenInvestor} />
-      <RecentActivitySection ready={ready} days={14} title="Ostatnie 14 dni sesyjnych" investors={investors} filterQuery={filterQuery} onOpenInvestor={onOpenInvestor} />
-      <RecentActivitySection ready={ready} days={30} title="Ostatnie 30 dni sesyjnych" investors={investors} filterQuery={filterQuery} onOpenInvestor={onOpenInvestor} />
+      <RecentActivitySection ready={ready} days={5} title="Ostatnie 5 dni sesyjnych" investors={investors} filterQuery={filterQuery} onOpenInvestor={onOpenInvestor} qualityView={qualityView} qualityByUsername={qualityByUsername} />
+      <RecentActivitySection ready={ready} days={14} title="Ostatnie 14 dni sesyjnych" investors={investors} filterQuery={filterQuery} onOpenInvestor={onOpenInvestor} qualityView={qualityView} qualityByUsername={qualityByUsername} />
+      <RecentActivitySection ready={ready} days={30} title="Ostatnie 30 dni sesyjnych" investors={investors} filterQuery={filterQuery} onOpenInvestor={onOpenInvestor} qualityView={qualityView} qualityByUsername={qualityByUsername} />
     </>
   );
 }
@@ -1671,6 +1719,10 @@ export function Dashboard() {
   const [dataLoadedAt, setDataLoadedAt] = useState<string | null>(null);
   const [selectedInvestor, setSelectedInvestor] = useState("all");
   const [investorSort, setInvestorSort] = useState<"slot" | "gain" | "risk" | "activity">("gain");
+  const [qualityView, setQualityView] = useState<"all" | "pass" | "fail">("pass");
+  const [qualityData, setQualityData] = useState<InvestorQualityPayload | null>(null);
+  const [qualityLoading, setQualityLoading] = useState(true);
+  const [qualityError, setQualityError] = useState("");
   const [portfolioUsername, setPortfolioUsername] = useState<string | null>(null);
   const [recentTrades, setRecentTrades] = useState<TradeEvent[]>([]);
   const [livePositions, setLivePositions] = useState<CurrentPortfolioPosition[]>([]);
@@ -1719,6 +1771,19 @@ export function Dashboard() {
 
   useEffect(() => () => activeLoad.current?.abort(), []);
   useEffect(() => () => activeRecentTradesLoad.current?.abort(), []);
+
+  useEffect(() => {
+    // Independent of the main dashboard load: 2 eToro requests per tracked
+    // investor (see /api/investor-quality), cached server-side for an hour,
+    // so this can take up to ~20-30s on a cold cache but is a free D1 read
+    // on every visit within that window.
+    let cancelled = false;
+    api<InvestorQualityPayload>("/api/investor-quality")
+      .then((payload) => { if (!cancelled) setQualityData(payload); })
+      .catch((error) => { if (!cancelled) setQualityError(error instanceof Error ? error.message : "Nie udało się sprawdzić wymagań inwestorów."); })
+      .finally(() => { if (!cancelled) setQualityLoading(false); });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     // Loading on a date change is the external synchronization performed by this effect.
@@ -1774,11 +1839,21 @@ export function Dashboard() {
     void loadRecentTrades(portfolioUsername);
   }, [portfolioUsername, loadRecentTrades]);
 
+  const qualityByUsername = useMemo(() => {
+    const map = new Map<string, InvestorQualityResult>();
+    for (const result of qualityData?.results ?? []) map.set(result.username.toLowerCase(), result);
+    return map;
+  }, [qualityData]);
   const visibleEvents = useMemo(
-    () => (data?.events ?? []).filter(
-      (event) => selectedInvestor === "all" || event.username === selectedInvestor,
-    ),
-    [data?.events, selectedInvestor],
+    () => (data?.events ?? []).filter((event) => {
+      if (selectedInvestor !== "all" && event.username !== selectedInvestor) return false;
+      if (qualityView !== "all") {
+        const result = qualityByUsername.get(event.username.toLowerCase());
+        if (!result || result.meetsCriteria !== (qualityView === "pass")) return false;
+      }
+      return true;
+    }),
+    [data?.events, selectedInvestor, qualityView, qualityByUsername],
   );
   const groupedVisibleEvents = useMemo(() => groupTradeEvents(visibleEvents), [visibleEvents]);
   const sortedInvestors = useMemo(() => {
@@ -1972,6 +2047,24 @@ export function Dashboard() {
         </div>
         {error && <div className="alert error" role="alert">{error}</div>}
         {data?.notice && <div className="alert notice"><span aria-hidden="true">i</span>{data.notice}</div>}
+        <div className="quality-toggle" role="group" aria-label="Filtr wymagań inwestora">
+          <button type="button" className={qualityView === "all" ? "active" : ""} onClick={() => setQualityView("all")}>
+            Wszyscy
+          </button>
+          <button type="button" className={qualityView === "pass" ? "active" : ""} onClick={() => setQualityView("pass")}>
+            Spełniają wymagania{qualityData ? ` (${qualityData.results.filter((r) => r.meetsCriteria).length})` : ""}
+          </button>
+          <button type="button" className={`fail ${qualityView === "fail" ? "active" : ""}`} onClick={() => setQualityView("fail")}>
+            Nie spełniają{qualityData ? ` (${qualityData.results.filter((r) => !r.meetsCriteria).length})` : ""}
+          </button>
+          {qualityLoading && (
+            <span className="quality-toggle-status" role="status" aria-live="polite">
+              <span className="loading-spinner small" aria-hidden="true" />
+              Sprawdzam wymagania…
+            </span>
+          )}
+        </div>
+        {!qualityLoading && qualityError && qualityView !== "all" && <div className="alert error">{qualityError}</div>}
         <div className="activity-controls">
           <div className="report-date">
             <span>Data dziennika</span>
@@ -2139,10 +2232,6 @@ export function Dashboard() {
                   <strong>{investor.fullName}</strong>
                   <small>@{investor.username}</small>
                 </span>
-                <span className="filter-investor-gains">
-                  <small>Od roku <b className={gainTone(investor.gainYtd)}>{formatPercent(investor.gainYtd, true)}</b></small>
-                  <small>2 lata <b className={gainTone(investor.gainTwoYears)}>{formatPercent(investor.gainTwoYears, true)}</b></small>
-                </span>
               </button>
             ))}
           </div>
@@ -2154,6 +2243,8 @@ export function Dashboard() {
         ready={Boolean(data)}
         investors={data?.investors ?? []}
         onOpenInvestor={(username) => setPortfolioUsername(username)}
+        qualityView={qualityView}
+        qualityByUsername={qualityByUsername}
       />
 
       <CompanyDiscussionSection />
@@ -2169,14 +2260,14 @@ export function Dashboard() {
           </div>
         </div>
         <div className="investor-grid">
-          {data?.investors.length ? sortedInvestors.map((investor) => (
+          {sortedInvestors.map((investor) => (
             <InvestorCard
               key={investor.username}
               investor={investor}
               selected={selectedInvestor === investor.username}
               onOpenPortfolio={() => setPortfolioUsername(investor.username)}
             />
-          )) : [1, 2, 3].map((value) => <div className="card-loading" key={value} />)}
+          ))}
         </div>
       </section>
 

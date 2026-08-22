@@ -100,6 +100,11 @@ section.recent-activity-summary { margin: 12px auto 0; }
 .sort-controls { display: flex; gap: 6px; flex-wrap: wrap; }
 .sort-controls button { border: 1px solid var(--line); border-radius: 999px; padding: 7px 13px; background: transparent; color: var(--muted); cursor: pointer; font-size: 11px; font-weight: 750; white-space: nowrap; }
 .sort-controls button.active { border-color: var(--ink); background: var(--ink); color: #fff; }
+.quality-toggle { display: flex; align-items: center; gap: 8px; margin: 12px 0; flex-wrap: wrap; }
+.quality-toggle button { border: 1px solid var(--line); border-radius: 999px; padding: 9px 16px; background: transparent; color: var(--muted); cursor: pointer; font-size: 12px; font-weight: 800; white-space: nowrap; }
+.quality-toggle button.active { border-color: var(--green); background: var(--green); color: #fff; }
+.quality-toggle button.fail.active { border-color: var(--coral); background: var(--coral); }
+.quality-toggle-status { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 11px; }
 .investor-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
 .investor-card, .card-loading { min-height: 365px; border: 1px solid var(--line); background: var(--paper-light); border-radius: 12px; transition: transform .2s ease, border-color .2s ease, box-shadow .2s ease; }
 .investor-card:hover, .investor-card.selected { transform: translateY(-3px); border-color: #aab3bb; box-shadow: var(--shadow); }
@@ -200,17 +205,11 @@ section.recent-activity-summary { margin: 12px auto 0; }
 .filter-row button:not(.all-investors) { flex: 0 0 185px; }
 .filter-row .all-investors { flex: 0 0 70px; display: grid; place-items: center; border-radius: 9px; font-size: 10px; font-weight: 800; }
 .filter-row button.active { color: #fff; background: var(--ink); border-color: var(--ink); }
-.filter-investor-name { min-width: 0; display: grid; gap: 2px; margin-bottom: 7px; }
+.filter-investor-name { min-width: 0; display: grid; gap: 2px; }
 .filter-investor-name strong, .filter-investor-name small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .filter-investor-name strong { color: var(--ink); font-size: 10px; }
 .filter-investor-name small { font-size: 8px; }
-.filter-investor-gains { display: flex; flex-wrap: wrap; gap: 5px 10px; }
-.filter-investor-gains small { font-size: 8px; }
-.filter-investor-gains b { margin-left: 2px; font-size: 9px; }
-.filter-investor-gains b.positive { color: var(--green); }
-.filter-investor-gains b.negative { color: var(--coral); }
-.filter-investor-gains b.neutral { color: var(--muted); }
-.filter-row button.active .filter-investor-name strong, .filter-row button.active .filter-investor-gains b { color: #fff; }
+.filter-row button.active .filter-investor-name strong { color: #fff; }
 .day-summary { margin: 0 0 9px; padding: 8px 9px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.28); }
 .day-summary.is-loading { border-color: rgba(31,95,72,.35); }
 .day-summary.is-loading .day-summary-heading strong { color: var(--line); opacity: .3; filter: blur(.4px); transition: opacity .15s; }

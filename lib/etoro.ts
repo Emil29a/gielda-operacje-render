@@ -149,50 +149,63 @@ async function etoroRequest<T>(path: string): Promise<T> {
 // not-yet-available field; resolveInvestors can fill them in later, more
 // gradually, once identity resolution for everyone isn't still pending.
 export async function resolveInvestorIdentities(usernames: string[], slotOffset = 0): Promise<Investor[]> {
-  return mapWithConcurrency(
+  // Each username is resolved independently and its own failure (no
+  // matching profile, a transient error) is caught right here and turned
+  // into a `null` rather than left to propagate: mapWithConcurrency's
+  // worker loop has no per-item isolation, so one uncaught throw takes down
+  // every other username sharing that worker's queue, discarding results
+  // that had already succeeded. That silently stalled real investors —
+  // permanently, since the same few get grouped together every sync tick.
+  const results = await mapWithConcurrency(
     usernames,
     INVESTOR_REQUEST_CONCURRENCY,
-    async (username, index) => {
-      const params = new URLSearchParams({ usernames: username });
-      const data = await etoroRequest<{
-        users?: Array<{
-          realCID?: number;
-          gcid?: number;
-          username: string;
-          avatars?: Array<{ url?: string; width?: number; type?: string }>;
-        }>;
-      }>(`/api/v1/user-info/people?${params}`);
-      const profile = (data.users ?? []).find(
-        (item) => item.username.toLowerCase() === username.toLowerCase(),
-      );
-      if (!profile) throw new Error(`Nie odnaleziono profilu @${username}.`);
-      const avatars = [...(profile.avatars ?? [])].filter((item) => item.url);
-      const originalAvatar = avatars.find((item) =>
-        item.type?.toLowerCase() === "original" || item.url?.includes("/avatars/original/"),
-      );
-      const avatar = originalAvatar?.url || avatars.sort(
-        (a, b) => (b.width ?? 0) - (a.width ?? 0),
-      )[0]?.url;
-      return {
-        slot: slotOffset + index + 1,
-        username: profile.username,
-        cid: profile.realCID || profile.gcid || 0,
-        fullName: profile.username,
-        avatarUrl: avatar || null,
-        riskScore: null,
-        dailyGain: null,
-        gainYtd: null,
-        gainTwoYears: null,
-        copiers: null,
-        updatedAt: new Date().toISOString(),
-        activeSince: null,
-        annualizedReturn: null,
-        fiveYearGain: null,
-        rankPosition: null,
-        rankPoolSize: null,
-      };
+    async (username, index): Promise<Investor | null> => {
+      try {
+        const params = new URLSearchParams({ usernames: username });
+        const data = await etoroRequest<{
+          users?: Array<{
+            realCID?: number;
+            gcid?: number;
+            username: string;
+            avatars?: Array<{ url?: string; width?: number; type?: string }>;
+          }>;
+        }>(`/api/v1/user-info/people?${params}`);
+        const profile = (data.users ?? []).find(
+          (item) => item.username.toLowerCase() === username.toLowerCase(),
+        );
+        if (!profile) throw new Error(`Nie odnaleziono profilu @${username}.`);
+        const avatars = [...(profile.avatars ?? [])].filter((item) => item.url);
+        const originalAvatar = avatars.find((item) =>
+          item.type?.toLowerCase() === "original" || item.url?.includes("/avatars/original/"),
+        );
+        const avatar = originalAvatar?.url || avatars.sort(
+          (a, b) => (b.width ?? 0) - (a.width ?? 0),
+        )[0]?.url;
+        return {
+          slot: slotOffset + index + 1,
+          username: profile.username,
+          cid: profile.realCID || profile.gcid || 0,
+          fullName: profile.username,
+          avatarUrl: avatar || null,
+          riskScore: null,
+          dailyGain: null,
+          gainYtd: null,
+          gainTwoYears: null,
+          copiers: null,
+          updatedAt: new Date().toISOString(),
+          activeSince: null,
+          annualizedReturn: null,
+          fiveYearGain: null,
+          rankPosition: null,
+          rankPoolSize: null,
+        };
+      } catch (error) {
+        console.error(`[etoro] resolveInvestorIdentities failed for @${username}, skipping`, error instanceof Error ? error.message : error);
+        return null;
+      }
     },
   );
+  return results.filter((investor): investor is Investor => investor !== null);
 }
 
 // Compounds a "since inception" return from monthly gain-history entries —
@@ -206,99 +219,108 @@ function compoundMonthlyGains(monthly: Array<{ gain?: number }>): number | null 
 }
 
 export async function resolveInvestors(usernames: string[], slotOffset = 0): Promise<Investor[]> {
-  return mapWithConcurrency(
+  // Same per-item isolation as resolveInvestorIdentities above — one
+  // investor's failure (not currently flagged Popular Investor, a missing
+  // profile) must not discard batch-mates that already resolved fine.
+  const results = await mapWithConcurrency(
     usernames,
     INVESTOR_REQUEST_CONCURRENCY,
-    async (username, index) => {
-      const params = new URLSearchParams({ usernames: username });
-      const data = await etoroRequest<{
-        users?: Array<{
-          realCID?: number;
-          gcid?: number;
-          username: string;
-          avatars?: Array<{ url?: string; width?: number; type?: string }>;
-        }>;
-      }>(`/api/v1/user-info/people?${params}`);
-      const profile = (data.users ?? []).find(
-        (item) => item.username.toLowerCase() === username.toLowerCase(),
-      );
-      if (!profile) throw new Error(`Nie odnaleziono profilu @${username}.`);
-      type TradeInfo = {
-        fullName?: string;
-        gain?: number;
-        riskScore?: number;
-        dailyGain?: number;
-        copiers?: number;
-        isPopularInvestor?: boolean;
-      };
-      const tradeInfoPath = `/api/v1/user-info/people/${encodeURIComponent(username)}/tradeinfo`;
-      // tradeinfo's own weeksSinceRegistration field is unreliable (verified
-      // off by years against real registration dates on multiple accounts),
-      // so registration date comes from a separate, cheap source instead:
-      // the earliest entry in this investor's full monthly gain history —
-      // its timestamp lines up exactly with the real "active since" date
-      // shown on eToro's own profile pages.
-      //
-      // findExactRank's list-scan (see that function) already returns
-      // annualizedReturn/fiveYearGain for free from the matched row, so
-      // that's the primary source now instead of a dedicated per-investor
-      // request — computed here alongside the others, not after, so the
-      // rank lookup's own sequential paging overlaps with these instead of
-      // adding to the total wait. The dedicated per-investor rankings
-      // request only still runs as a fallback, for the rare investor
-      // findExactRank can't find in the copiersMin pool at all (e.g.
-      // leszekfx, with too few copiers to appear in it).
-      const [currentYear, lastTwoYears, gainHistory, rank] = await Promise.all([
-        etoroRequest<TradeInfo>(`${tradeInfoPath}?period=CurrYear`),
-        etoroRequest<TradeInfo>(`${tradeInfoPath}?period=LastTwoYears`),
-        etoroRequest<{ monthly?: Array<{ timestamp: string; gain?: number }> }>(
-          `/api/v1/user-info/people/${encodeURIComponent(username)}/gain`,
-        ).catch(() => ({ monthly: [] })),
-        findExactRank(username),
-      ]);
-      if (!currentYear.isPopularInvestor) {
-        throw new Error(`@${username} nie jest obecnie oznaczony jako Popular Investor.`);
+    async (username, index): Promise<Investor | null> => {
+      try {
+        const params = new URLSearchParams({ usernames: username });
+        const data = await etoroRequest<{
+          users?: Array<{
+            realCID?: number;
+            gcid?: number;
+            username: string;
+            avatars?: Array<{ url?: string; width?: number; type?: string }>;
+          }>;
+        }>(`/api/v1/user-info/people?${params}`);
+        const profile = (data.users ?? []).find(
+          (item) => item.username.toLowerCase() === username.toLowerCase(),
+        );
+        if (!profile) throw new Error(`Nie odnaleziono profilu @${username}.`);
+        type TradeInfo = {
+          fullName?: string;
+          gain?: number;
+          riskScore?: number;
+          dailyGain?: number;
+          copiers?: number;
+          isPopularInvestor?: boolean;
+        };
+        const tradeInfoPath = `/api/v1/user-info/people/${encodeURIComponent(username)}/tradeinfo`;
+        // tradeinfo's own weeksSinceRegistration field is unreliable (verified
+        // off by years against real registration dates on multiple accounts),
+        // so registration date comes from a separate, cheap source instead:
+        // the earliest entry in this investor's full monthly gain history —
+        // its timestamp lines up exactly with the real "active since" date
+        // shown on eToro's own profile pages.
+        //
+        // findExactRank's list-scan (see that function) already returns
+        // annualizedReturn/fiveYearGain for free from the matched row, so
+        // that's the primary source now instead of a dedicated per-investor
+        // request — computed here alongside the others, not after, so the
+        // rank lookup's own sequential paging overlaps with these instead of
+        // adding to the total wait. The dedicated per-investor rankings
+        // request only still runs as a fallback, for the rare investor
+        // findExactRank can't find in the copiersMin pool at all (e.g.
+        // leszekfx, with too few copiers to appear in it).
+        const [currentYear, lastTwoYears, gainHistory, rank] = await Promise.all([
+          etoroRequest<TradeInfo>(`${tradeInfoPath}?period=CurrYear`),
+          etoroRequest<TradeInfo>(`${tradeInfoPath}?period=LastTwoYears`),
+          etoroRequest<{ monthly?: Array<{ timestamp: string; gain?: number }> }>(
+            `/api/v1/user-info/people/${encodeURIComponent(username)}/gain`,
+          ).catch(() => ({ monthly: [] })),
+          findExactRank(username),
+        ]);
+        if (!currentYear.isPopularInvestor) {
+          throw new Error(`@${username} nie jest obecnie oznaczony jako Popular Investor.`);
+        }
+        const avatars = [...(profile.avatars ?? [])].filter((item) => item.url);
+        const originalAvatar = avatars.find((item) =>
+          item.type?.toLowerCase() === "original" || item.url?.includes("/avatars/original/"),
+        );
+        const avatar = originalAvatar?.url || avatars.sort(
+          (a, b) => (b.width ?? 0) - (a.width ?? 0),
+        )[0]?.url;
+        let annualizedReturn = rank?.annualizedReturn ?? null;
+        // Real 5-year figure when the account is old enough for eToro to give
+        // one (see findExactRank); otherwise, compounding the same monthly
+        // gain history already fetched for activeSince gives an honest
+        // "return since this account started" number instead of just "—" —
+        // exactly what a 5-year figure degrades to for a younger account.
+        const fiveYearGain = rank?.fiveYearGain ?? compoundMonthlyGains(gainHistory.monthly);
+        if (rank == null) {
+          const rankingRow = await etoroRequest<{ data?: { annualizedReturn?: number } }>(
+            `/api/v2/portfolios/${encodeURIComponent(username)}/rankings?period=LastYear`,
+          ).catch(() => null);
+          annualizedReturn = rankingRow?.data?.annualizedReturn != null ? rankingRow.data.annualizedReturn * 100 : null;
+        }
+        return {
+          slot: slotOffset + index + 1,
+          username: profile.username,
+          cid: profile.realCID || profile.gcid || 0,
+          fullName: currentYear.fullName || profile.username,
+          avatarUrl: avatar || null,
+          riskScore: currentYear.riskScore ?? null,
+          dailyGain: currentYear.dailyGain ?? null,
+          gainYtd: currentYear.gain ?? null,
+          gainTwoYears: lastTwoYears.gain ?? null,
+          copiers: currentYear.copiers ?? null,
+          updatedAt: new Date().toISOString(),
+          activeSince: gainHistory.monthly?.[0]?.timestamp ?? null,
+          annualizedReturn,
+          fiveYearGain,
+          rankPosition: rank?.position ?? null,
+          rankPoolSize: rank?.poolSize ?? null,
+        };
+      } catch (error) {
+        console.error(`[etoro] resolveInvestors failed for @${username}, skipping`, error instanceof Error ? error.message : error);
+        return null;
       }
-      const avatars = [...(profile.avatars ?? [])].filter((item) => item.url);
-      const originalAvatar = avatars.find((item) =>
-        item.type?.toLowerCase() === "original" || item.url?.includes("/avatars/original/"),
-      );
-      const avatar = originalAvatar?.url || avatars.sort(
-        (a, b) => (b.width ?? 0) - (a.width ?? 0),
-      )[0]?.url;
-      let annualizedReturn = rank?.annualizedReturn ?? null;
-      // Real 5-year figure when the account is old enough for eToro to give
-      // one (see findExactRank); otherwise, compounding the same monthly
-      // gain history already fetched for activeSince gives an honest
-      // "return since this account started" number instead of just "—" —
-      // exactly what a 5-year figure degrades to for a younger account.
-      const fiveYearGain = rank?.fiveYearGain ?? compoundMonthlyGains(gainHistory.monthly);
-      if (rank == null) {
-        const rankingRow = await etoroRequest<{ data?: { annualizedReturn?: number } }>(
-          `/api/v2/portfolios/${encodeURIComponent(username)}/rankings?period=LastYear`,
-        ).catch(() => null);
-        annualizedReturn = rankingRow?.data?.annualizedReturn != null ? rankingRow.data.annualizedReturn * 100 : null;
-      }
-      return {
-        slot: slotOffset + index + 1,
-        username: profile.username,
-        cid: profile.realCID || profile.gcid || 0,
-        fullName: currentYear.fullName || profile.username,
-        avatarUrl: avatar || null,
-        riskScore: currentYear.riskScore ?? null,
-        dailyGain: currentYear.dailyGain ?? null,
-        gainYtd: currentYear.gain ?? null,
-        gainTwoYears: lastTwoYears.gain ?? null,
-        copiers: currentYear.copiers ?? null,
-        updatedAt: new Date().toISOString(),
-        activeSince: gainHistory.monthly?.[0]?.timestamp ?? null,
-        annualizedReturn,
-        fiveYearGain,
-        rankPosition: rank?.position ?? null,
-        rankPoolSize: rank?.poolSize ?? null,
-      };
     },
   );
+  return results.filter((investor): investor is Investor => investor !== null);
 }
 
 export async function fetchPortfolio(username: string): Promise<PortfolioPosition[]> {
@@ -878,6 +900,56 @@ export async function findExactRank(
     if (index !== -1) return toResult(data.rows[index], (page - 1) * RANK_PAGE_SIZE + index + 1);
   }
   return null;
+}
+
+export type InvestorQualityMetrics = {
+  gain2y: number | null;
+  ytd: number | null;
+  winRatio: number | null;
+  riskScore: number | null;
+  highLeveragePct: number | null;
+  trades2y: number | null;
+  copiers: number | null;
+  copiersGain: number | null;
+};
+
+// The per-investor rankings endpoint (already used elsewhere for
+// annualizedReturn/extended stats) carries every field the "meets our
+// criteria" screen needs in a single row — winRatio, highLeveragePct,
+// trades, copiers, copiersGain — so classifying one investor costs exactly
+// 2 requests (LastTwoYears for the bulk of these plus the 2-year gain,
+// CurrYear for YTD) instead of the ~20-page pool scan a from-scratch
+// discovery search needs. Verified against the same field names/scaling
+// used in that pool scan (gain/copiersGain are fractions, ×100 here).
+export async function fetchInvestorQualityMetrics(username: string): Promise<InvestorQualityMetrics | null> {
+  type RankingRow = {
+    data?: {
+      gain?: number;
+      winRatio?: number;
+      riskScore?: number;
+      highLeveragePct?: number;
+      trades?: number;
+      copiers?: number;
+      copiersGain?: number;
+    };
+  };
+  const path = `/api/v2/portfolios/${encodeURIComponent(username)}/rankings`;
+  const [twoYear, ytd] = await Promise.all([
+    etoroRequest<RankingRow>(`${path}?period=LastTwoYears`).catch(() => null),
+    etoroRequest<RankingRow>(`${path}?period=CurrYear`).catch(() => null),
+  ]);
+  const d = twoYear?.data;
+  if (!d) return null;
+  return {
+    gain2y: d.gain != null ? d.gain * 100 : null,
+    ytd: ytd?.data?.gain != null ? ytd.data.gain * 100 : null,
+    winRatio: d.winRatio ?? null,
+    riskScore: d.riskScore ?? null,
+    highLeveragePct: d.highLeveragePct ?? null,
+    trades2y: d.trades ?? null,
+    copiers: d.copiers ?? null,
+    copiersGain: d.copiersGain != null ? d.copiersGain * 100 : null,
+  };
 }
 
 // Turns a user-typed ticker or company name into eToro instrumentIds. eToro's
